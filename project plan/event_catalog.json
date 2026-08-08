@@ -1,0 +1,74 @@
+{
+  "envelope": {
+    "required": ["event_id", "event_type", "event_version", "tenant_id", "organization_id", "legal_entity_id", "occurred_at", "aggregate_type", "aggregate_id", "data"],
+    "optional": ["accounting_book_id", "actor_id", "correlation_id", "causation_id", "idempotency_key", "source_system", "metadata"]
+  },
+  "rules": [
+    "event_id is globally unique",
+    "event_type is immutable once published",
+    "breaking payload changes require a new event_version",
+    "consumers must be idempotent",
+    "financial consumers persist event_id/source traceability",
+    "outbox publication occurs only after the originating database transaction commits"
+  ],
+  "events": {
+    "platform": [
+      "tenant.created", "organization.created", "legal_entity.created", "branch.created",
+      "user.invited", "membership.created", "role.changed", "permission.changed",
+      "accounting_period.opened", "accounting_period.soft_closed", "accounting_period.hard_closed", "accounting_period.reopened"
+    ],
+    "ledger": [
+      "account.created", "account.updated", "dimension.created", "dimension_value.created",
+      "journal.draft_created", "journal.submitted", "journal.approved", "journal.posted", "journal.reversed", "posting.failed"
+    ],
+    "sales_ar": [
+      "customer.created", "quote.created", "quote.accepted", "sales_order.confirmed",
+      "invoice.created", "invoice.approved", "invoice.posted", "invoice.sent", "invoice.overdue", "invoice.paid",
+      "credit_note.posted", "customer_receipt.received", "customer_receipt.allocated", "customer_refund.completed", "ar.writeoff_posted"
+    ],
+    "purchasing_ap": [
+      "vendor.created", "purchase_requisition.submitted", "purchase_order.approved", "purchase_order.issued",
+      "goods_receipt.posted", "vendor_bill.created", "vendor_bill.matched", "vendor_bill.approved", "vendor_bill.posted",
+      "vendor_credit.posted", "vendor_payment.requested", "vendor_payment.approved", "vendor_payment.completed",
+      "expense_claim.submitted", "expense_claim.approved", "expense_claim.posted"
+    ],
+    "banking": [
+      "bank_account.created", "bank_feed.sync_started", "bank_feed.sync_completed", "bank_transaction.imported",
+      "bank_transaction.normalized", "bank_match.suggested", "bank_transaction.matched", "bank_transaction.reconciled",
+      "bank_reconciliation.started", "bank_reconciliation.completed", "bank_transfer.completed", "processor_settlement.reconciled"
+    ],
+    "tax": [
+      "tax_code.created", "tax_rate.changed", "tax_transaction.recorded", "tax_period.opened", "tax_return.prepared", "tax_return.reviewed", "tax_return.filed", "tax_period.closed"
+    ],
+    "inventory": [
+      "item.created", "inventory.received", "inventory.issued", "inventory.transferred", "inventory.adjusted",
+      "inventory.count_completed", "inventory.returned", "inventory.landed_cost_allocated", "inventory.cost_recalculated"
+    ],
+    "assets": [
+      "asset.created", "asset.capitalized", "asset.transferred", "asset.depreciation_posted", "asset.impaired", "asset.revalued", "asset.disposed"
+    ],
+    "projects_budgets": [
+      "project.created", "project.closed", "budget.created", "budget.approved", "budget.revised", "forecast.snapshot_created"
+    ],
+    "close_reporting": [
+      "close.started", "close.task_completed", "reconciliation.completed", "financial_snapshot.created", "period.close_ready", "period.closed"
+    ],
+    "multi_entity": [
+      "fx_rate.imported", "fx_remeasurement.completed", "intercompany_transaction.created", "intercompany_transaction.matched",
+      "consolidation.started", "consolidation.translation_completed", "consolidation.elimination_posted", "consolidation.completed"
+    ],
+    "workflow": [
+      "approval.requested", "approval.assigned", "approval.approved", "approval.rejected", "approval.delegated", "approval.escalated", "approval.cancelled"
+    ],
+    "ai": [
+      "ai.document_extracted", "ai.coding_suggested", "ai.reconciliation_suggested", "ai.anomaly_detected",
+      "ai.action_proposed", "ai.action_approved", "ai.action_rejected", "ai.action_executed"
+    ],
+    "integration": [
+      "integration.connected", "integration.disconnected", "sync.started", "sync.completed", "sync.failed", "webhook.delivery_succeeded", "webhook.delivery_failed"
+    ],
+    "migration": [
+      "migration.job_created", "migration.validation_completed", "migration.import_completed", "migration.reconciliation_completed", "migration.cutover_completed"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# pnpm 10+ requires an explicit decision on every dependency lifecycle script.
+# Listing them is the supply-chain control: an unreviewed postinstall is exactly
+# the vector ADR-0009 §5 makes release-blocking.
+allowBuilds:
+  esbuild: true
+  '@nestjs/core': true
+  sharp: true
+  unrs-resolver: true
+  # Optional native accelerator for msgpackr (a BullMQ dependency). Declined:
+  # msgpackr falls back to its JavaScript path, queue payloads here are small
+  # event envelopes rather than large binary blobs, and a native postinstall that
+  # buys nothing measurable is supply-chain surface for free.
+  msgpackr-extract: false

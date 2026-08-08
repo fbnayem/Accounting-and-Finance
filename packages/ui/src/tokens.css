@@ -1,0 +1,126 @@
+/*
+ * Design tokens.
+ *
+ * ADR-0010 §3: text contrast 4.5:1 minimum, 3:1 for large text and UI component
+ * boundaries, focus indicator 3:1 against its adjacent colour. Every pair below
+ * is checked by `contrast.test.ts` — a token that fails the ratio fails the build,
+ * so the palette cannot drift out of conformance between design reviews.
+ *
+ * The semantic layer exists so components never name a raw colour. `--color-danger`
+ * can be re-tuned for contrast without touching a component.
+ */
+
+:root {
+  /* --- neutral ramp ------------------------------------------------------ */
+  --color-neutral-0: #ffffff;
+  --color-neutral-50: #f7f8fa;
+  --color-neutral-100: #eceef2;
+  --color-neutral-200: #d9dde4;
+  --color-neutral-300: #b9c0cc;
+  --color-neutral-400: #8b95a6;
+  --color-neutral-500: #67718a;
+  --color-neutral-600: #4c5568;
+  --color-neutral-700: #363d4d;
+  --color-neutral-800: #232936;
+  --color-neutral-900: #131720;
+
+  /* --- accent ------------------------------------------------------------ */
+  --color-accent-500: #2563eb;
+  --color-accent-600: #1d4ed8;
+  --color-accent-700: #1e40af;
+
+  /* --- status ------------------------------------------------------------ */
+  --color-danger-600: #b42318;
+  --color-danger-50: #fef3f2;
+  --color-warning-700: #92400e;
+  --color-warning-50: #fffaeb;
+  --color-success-700: #0a6b47;
+  --color-success-50: #ecfdf3;
+
+  /* --- semantic ---------------------------------------------------------- */
+  --surface-page: var(--color-neutral-50);
+  --surface-raised: var(--color-neutral-0);
+  --surface-sunken: var(--color-neutral-100);
+
+  --text-primary: var(--color-neutral-900);
+  --text-secondary: var(--color-neutral-600);
+  --text-inverse: var(--color-neutral-0);
+  --text-danger: var(--color-danger-600);
+  --text-success: var(--color-success-700);
+
+  --border-subtle: var(--color-neutral-200);
+  /*
+   * neutral-500, not neutral-400. A "strong" border carries meaning — it marks a
+   * control boundary — so WCAG 2.2 criterion 1.4.11 requires 3:1 against its
+   * background. neutral-400 on the page surface is 2.84:1, which contrast.test.ts
+   * caught. --border-subtle is decorative and is exempt.
+   */
+  --border-strong: var(--color-neutral-500);
+
+  --action-primary-bg: var(--color-accent-600);
+  --action-primary-text: var(--color-neutral-0);
+  --action-danger-bg: var(--color-danger-600);
+
+  /* --- focus (ADR-0010 §3) ---------------------------------------------- */
+  --focus-ring-color: var(--color-accent-600);
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* --- typography -------------------------------------------------------- */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /*
+   * Tabular figures are not decoration in an accounting product: without them,
+   * digits have different widths and a column of amounts does not align, which
+   * makes a trial balance materially harder to scan.
+   */
+  --font-numeric: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+  --font-size-sm: 0.8125rem;
+  --font-size-base: 0.9375rem;
+  --font-size-lg: 1.125rem;
+  --line-height-base: 1.5;
+
+  /* --- spacing and sizing ------------------------------------------------ */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --radius-sm: 3px;
+  --radius-md: 6px;
+
+  /* WCAG 2.2 criterion 2.5.8 Target Size (Minimum). */
+  --target-size-min: 24px;
+  --control-height: 36px;
+}
+
+/* Every focusable element, one rule, no per-component opt-out. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+  /* 2.4.11 Focus Not Obscured: a sticky table header must not cover the focused
+     row, so focused elements are lifted above sticky chrome. */
+  position: relative;
+  z-index: 1;
+}
+
+/* Removing the outline without an equivalent replacement is an ADR-0010 violation.
+   Stated here so it is visible in the stylesheet, not only in the ADR. */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --border-subtle: var(--color-neutral-400);
+    --text-secondary: var(--color-neutral-700);
+  }
+}

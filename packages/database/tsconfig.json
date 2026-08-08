@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    // Workspace packages resolve through node_modules to their built `dist/*.d.ts`.
+    // pnpm builds in topological order, so `pnpm build` produces them first.
+    "paths": {}
+  },
+  "include": ["src/**/*"],
+  "exclude": ["src/**/*.test.ts", "src/integration/**"]
+}

@@ -1,0 +1,13 @@
+# Line endings are LF in the repository and LF in the working copy, on every
+# platform. Without this, `core.autocrlf=true` — the Windows default — checks
+# every file out as CRLF, and `.prettierrc.json` sets `endOfLine: "lf"`, so
+# `pnpm verify` fails on the whole repository before it does any work.
+* text=auto eol=lf
+
+# Generated and binary. Never normalised, never shown as a diff in review.
+pnpm-lock.yaml linguist-generated=true
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary

@@ -1,0 +1,16 @@
+{
+  "profile": "small",
+  "recordedAt": "2026-08-08T13:02:54.928Z",
+  "p95": {
+    "trial-balance-one-period": 4.03,
+    "profit-and-loss-with-comparatives": 6.27,
+    "balance-sheet-one-period": 4.69,
+    "general-ledger-account-drilldown": 2.39,
+    "api-list-cursor-page-50": 0.96,
+    "period-resolution": 0.7,
+    "single-journal-post-10-lines": 11.8,
+    "ar-aging-50k-open-items": 2.28,
+    "ap-aging-50k-open-items": 2.7,
+    "ledger-read-model-rebuild-500k": 19.66
+  }
+}

@@ -1,0 +1,343 @@
+# Canonical Domain Event Contract
+#
+# SINGLE SOURCE OF TRUTH. Supersedes both `project plan/blueprints/event_catalog.json`
+# and the "## Events" sections of the module specifications, which disagreed with each
+# other on 22 names and omitted 25 required events (audit F-101, F-102).
+#
+# Event types are IMMUTABLE once published. A breaking payload change requires a new
+# `version`, never an edit in place.
+
+version: 1
+generated: 2026-08-07
+supersedes:
+  - project plan/blueprints/event_catalog.json
+  - module specification "## Events" sections (docs 02-24)
+
+# ---------------------------------------------------------------------------
+naming:
+  pattern: "<aggregate>.<past_tense_verb>"
+  rules:
+    - Aggregate name matches the schema table's singular form.
+    - Verb is past tense; an event records something that has happened.
+    - No unprefixed aggregates. `transfer.` and `reconciliation.` were ambiguous
+      across banking and close; they are `bank_transfer.` and `bank_reconciliation.`.
+    - A lifecycle state that the platform gates on gets its own event. `accounting_period.closed`
+      is forbidden because soft and hard close are different states with different consequences.
+
+# ---------------------------------------------------------------------------
+envelope:
+  required:
+    - event_id            # globally unique; the idempotency key for every consumer
+    - event_type
+    - event_version
+    - tenant_id
+    - organization_id
+    - legal_entity_id     # null only for platform-scope events (see scope: platform)
+    - occurred_at
+    - aggregate_type
+    - aggregate_id
+    - data
+  optional:
+    - accounting_book_id
+    - branch_id
+    - actor_id
+    - actor_type          # USER | SERVICE | SYSTEM | AI
+    - correlation_id
+    - causation_id
+    - idempotency_key
+    - source_system
+    - metadata
+
+rules:
+  - event_id is globally unique.
+  - event_type is immutable once published.
+  - Breaking payload changes require a new event_version.
+  - Consumers must be idempotent and record processed event_ids.
+  - Financial consumers persist event_id and source traceability.
+  - Outbox publication occurs only after the originating database transaction commits.
+  - organization_id and legal_entity_id are indexed columns on outbox_events, not payload
+    fields, so entity-scoped subscriptions and per-entity replay can filter on them (F-041).
+
+# ---------------------------------------------------------------------------
+# status:  new      = required by module prose, absent from the original catalog (F-102)
+#          renamed  = original catalog name kept; `was` records the module-doc spelling (F-101)
+#          split    = one doc name became two distinct events
+# ---------------------------------------------------------------------------
+
+contexts:
+
+  platform:
+    scope: platform            # legal_entity_id may be null
+    phase: 1
+    events:
+      tenant.created:                     {}
+      tenant.suspended:                   {status: new, note: "doc 23 tenant suspend/reactivate workflow"}
+      tenant.reactivated:                 {status: new}
+      organization.created:               {}
+      legal_entity.created:               {}
+      legal_entity.activated:             {status: new, note: "posting stays disabled until activation (doc 02)"}
+      branch.created:                     {}
+      user.invited:                       {}
+      user.suspended:                     {status: new, note: "must revoke live sessions (ADR-0005)"}
+      user.reactivated:                   {status: new}
+      membership.created:                 {}
+      role.changed:                       {status: renamed, was: role.updated}
+      permission.changed:                 {}
+      accounting_period.opened:           {}
+      accounting_period.soft_closed:      {status: renamed, was: accounting_period.closed}
+      accounting_period.hard_closed:      {status: renamed, was: accounting_period.closed}
+      accounting_period.reopened:         {}
+      accounting_policy.version_created:  {status: new, note: "doc 01 rule 7 - versioned policy"}
+
+  ledger:
+    scope: book
+    phase: 2
+    events:
+      account.created:          {}
+      account.updated:          {}
+      dimension.created:        {}
+      dimension_value.created:  {}
+      journal.draft_created:    {}
+      journal.submitted:        {}
+      journal.approved:         {}
+      journal.posted:           {}
+      journal.reversed:         {}
+      posting.failed:           {}
+
+  sales_ar:
+    scope: book
+    phase: 3
+    events:
+      customer.created:             {}
+      quote.created:                {}
+      quote.accepted:               {}
+      sales_order.confirmed:        {}
+      invoice.created:              {}
+      invoice.approved:             {}
+      invoice.posted:               {}
+      invoice.sent:                 {}
+      invoice.partially_paid:       {status: new, note: "doc 04 lifecycle has PARTIALLY_PAID; catalog jumped posted->paid"}
+      invoice.overdue:              {}
+      invoice.paid:                 {}
+      credit_note.posted:           {}
+      customer_receipt.received:    {note: "funds received; not yet an accounting event"}
+      customer_receipt.posted:      {status: split, was: customer_receipt.posted, note: "the accounting moment, distinct from .received"}
+      customer_receipt.allocated:   {}
+      customer_refund.completed:    {}
+      ar.writeoff_posted:           {}
+      dunning.stage_changed:        {status: new, note: "doc 04 dunning escalation is event-driven"}
+
+  purchasing_ap:
+    scope: book
+    phase: 3
+    events:
+      vendor.created:                    {}
+      vendor.bank_details_changed:       {status: new, high_risk: true, note: "doc 05 high-risk change; doc 13 anomaly input"}
+      purchase_requisition.submitted:    {}
+      purchase_requisition.approved:     {status: new}
+      purchase_order.approved:           {}
+      purchase_order.issued:             {status: renamed, was: purchase_order.sent}
+      goods_receipt.posted:              {}
+      vendor_bill.created:               {}
+      vendor_bill.matched:               {}
+      vendor_bill.match_failed:          {status: new, was: bill.match_exception, note: "matched cannot represent the exception path"}
+      vendor_bill.approved:              {status: renamed, was: bill.approved}
+      vendor_bill.posted:                {status: renamed, was: bill.posted}
+      vendor_credit.posted:              {}
+      payment_run.approved:              {status: new, note: "a run is not a payment"}
+      vendor_payment.requested:          {}
+      vendor_payment.approved:           {}
+      vendor_payment.completed:          {note: "provider confirmation"}
+      vendor_payment.posted:             {status: new, note: "the accounting moment, distinct from .completed"}
+      vendor_payment.failed:             {status: new, note: "doc 05 requires FAILED status tracking"}
+      expense_claim.submitted:           {}
+      expense_claim.approved:            {}
+      expense_claim.posted:              {}
+
+  banking:
+    scope: book
+    phase: 4
+    events:
+      bank_account.created:              {}
+      bank_connection.expiring:          {status: new, note: "doc 15 'alert before credentials expire' - this is the trigger"}
+      bank_feed.sync_started:            {}
+      bank_feed.sync_completed:          {status: renamed, was: bank_feed.synced}
+      bank_transaction.imported:         {}
+      bank_transaction.normalized:       {}
+      bank_transaction.categorized:      {status: new, note: "doc 06 categorize action has its own route"}
+      bank_match.suggested:              {}
+      bank_transaction.matched:          {}
+      bank_transaction.reconciled:       {}
+      bank_reconciliation.started:       {}
+      bank_reconciliation.completed:     {status: renamed, was: reconciliation.finalized, note: "unprefixed form collided with close_reporting"}
+      bank_transfer.completed:           {status: renamed, was: transfer.posted}
+      processor_settlement.reconciled:   {status: renamed, was: settlement.matched}
+
+  tax:
+    scope: entity
+    phase: 3
+    events:
+      tax_code.created:            {}
+      tax_rate.changed:            {}
+      tax_rule.version_created:    {status: new, note: "doc 01 rule 7 - versioned tax rules"}
+      tax_calculation.completed:   {status: new, note: "tax subledger write path"}
+      tax_transaction.recorded:    {}
+      tax_period.opened:           {}
+      tax_period.closed:           {}
+      tax_return.prepared:         {}
+      tax_return.ready:            {status: new, note: "doc 07 machine: OPEN->PREPARING->READY->FILED->AMENDED"}
+      tax_return.reviewed:         {}
+      tax_return.filed:            {}
+      tax_return.amended:          {status: new, note: "terminal state in doc 07's machine"}
+      localization.installed:      {status: new}
+      localization.upgraded:       {status: new, note: "carries the version delta; never rewrites history"}
+      einvoice.submitted:          {status: new}
+      einvoice.accepted:           {status: new}
+      einvoice.rejected:           {status: new}
+
+  inventory:
+    scope: book
+    phase: 5
+    events:
+      item.created:                       {}
+      inventory.received:                 {}
+      inventory.issued:                   {}
+      inventory.transferred:              {}
+      inventory.adjusted:                 {}
+      inventory.count_completed:          {}
+      inventory.returned:                 {}
+      inventory.landed_cost_allocated:    {}
+      inventory.cost_recalculated:        {}
+
+  assets:
+    scope: book
+    phase: 5
+    events:
+      asset.created:                {}
+      asset.capitalized:            {}
+      asset.transferred:            {}
+      asset.depreciation_posted:    {status: renamed, was: depreciation.posted}
+      asset.impaired:               {}
+      asset.impairment_reversed:    {status: new, note: "IFRS/IAS 36 permits reversal for non-goodwill assets - ADR-0001"}
+      asset.revalued:               {}
+      asset.disposed:               {}
+
+  projects_budgets:
+    scope: entity
+    phase: 5
+    events:
+      project.created:              {}
+      project.closed:               {}
+      budget.created:               {}
+      budget.approved:              {}
+      budget.revised:               {}
+      budget.superseded:            {status: new, note: "the old version's transition, distinct from .revised"}
+      budget.threshold_exceeded:    {status: new, note: "doc 10 budget control: warn/block/override"}
+      forecast.snapshot_created:    {}
+      forecast.published:           {status: new}
+      billing_proposal.created:     {status: new, note: "project billing hand-off to AR"}
+
+  close_reporting:
+    scope: book
+    phase: 6
+    events:
+      close.started:                        {}
+      close.task_completed:                 {status: renamed, was: close_task.completed}
+      reconciliation.completed:             {}
+      account_reconciliation.certified:     {status: new, note: "preparer/approver certification - Gate D artifact"}
+      financial_snapshot.created:           {}
+      financial_statements.approved:        {status: new, note: "gates the immutable snapshot"}
+      report.generated:                     {status: new, note: "doc 12 export/report audit logging"}
+      period.close_ready:                   {}
+      period.closed:                        {}
+      audit_request.created:                {status: new, note: "auditor workspace workflow"}
+
+  multi_entity:
+    scope: entity
+    phase: 7
+    events:
+      fx_rate.imported:                       {}
+      fx_remeasurement.completed:             {}
+      intercompany_transaction.created:       {}
+      intercompany_transaction.matched:       {}
+      consolidation.started:                  {}
+      consolidation.translation_completed:    {}
+      consolidation.elimination_posted:       {}
+      consolidation.completed:                {}
+
+  workflow:
+    scope: entity
+    phase: 6
+    events:
+      workflow.started:      {status: new, note: "instance lifecycle, distinct from step-level approval.*"}
+      workflow.completed:    {status: new}
+      approval.requested:    {}
+      approval.assigned:     {}
+      approval.approved:     {}
+      approval.rejected:     {}
+      approval.delegated:    {}
+      approval.escalated:    {}
+      approval.cancelled:    {}
+      task.created:          {status: new, note: "unified inbox has 10 source types (doc 14)"}
+      task.completed:        {status: new, note: "closes the item and its escalation timers"}
+
+  notifications:
+    scope: platform
+    phase: 1
+    events:
+      notification.sent:      {status: new, note: "delivery confirmation with provider message ID"}
+      notification.failed:    {status: new, note: "doc 23 - failures enter the operations view"}
+
+  ai:
+    scope: entity
+    phase: 8
+    events:
+      ai.document_extracted:          {}
+      ai.coding_suggested:            {}
+      ai.reconciliation_suggested:    {}
+      ai.anomaly_detected:            {}
+      ai.action_proposed:             {}
+      ai.action_approved:             {}
+      ai.action_rejected:             {}
+      ai.action_executed:             {}
+
+  integration:
+    scope: entity
+    phase: 9
+    events:
+      integration.connected:          {}
+      integration.disconnected:       {}
+      sync.started:                   {}
+      sync.completed:                 {}
+      sync.failed:                    {}
+      webhook.delivery_succeeded:     {}
+      webhook.delivery_failed:        {}
+
+  migration:
+    scope: entity
+    phase: 9
+    events:
+      migration.job_created:                  {}
+      migration.validation_completed:         {}
+      migration.import_completed:             {}
+      migration.reconciliation_completed:     {}
+      migration.cutover_completed:            {}
+
+# ---------------------------------------------------------------------------
+# Names that MUST NOT be used. Each was in a module doc; each now resolves above.
+# Recorded so a developer grepping the old prose finds the canonical form.
+# ---------------------------------------------------------------------------
+forbidden:
+  role.updated:                   role.changed
+  accounting_period.closed:       accounting_period.soft_closed | accounting_period.hard_closed
+  bill.posted:                    vendor_bill.posted
+  bill.approved:                  vendor_bill.approved
+  bill.extracted:                 ai.document_extracted (aggregate_type=vendor_bill)
+  bill.match_exception:           vendor_bill.match_failed
+  purchase_order.sent:            purchase_order.issued
+  bank_feed.synced:               bank_feed.sync_completed
+  reconciliation.finalized:       bank_reconciliation.completed
+  transfer.posted:                bank_transfer.completed
+  settlement.matched:             processor_settlement.reconciled
+  depreciation.posted:            asset.depreciation_posted
+  close_task.completed:           close.task_completed

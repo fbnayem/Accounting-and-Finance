@@ -1,0 +1,229 @@
+name: CI
+
+# doc 21 Phase 0: "CI pipeline: lint, format, typecheck, unit tests, integration
+# tests, migration validation, build and dependency/security scan."
+#
+# Phase 0 exit criterion 2 is "CI rejects schema drift, failed tests and type
+# errors" — the `schema` job is the first of those, and it is the one that would
+# otherwise be quietly skipped, because schema drift is invisible until a
+# migration fails in production.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+  PNPM_VERSION: '11'
+
+jobs:
+  static:
+    name: Format, lint, typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: '${{ env.PNPM_VERSION }}' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "./packages/*" build
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+
+  contracts:
+    name: Contract drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: '${{ env.PNPM_VERSION }}' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      # Fails if events.yaml or openapi.yaml disagree with the generated modules,
+      # if a superseded event name is live, or if a mutation route has no
+      # x-permission. F-101 and F-103 are the defects this prevents recurring.
+      - run: pnpm contracts:check
+      - run: pnpm dod:check
+
+  schema:
+    name: Migrations and schema drift
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # ADR-0008 §1: 16 is a hard requirement, not a preference. The schema uses
+        # UNIQUE NULLS NOT DISTINCT, btree_gist exclusion constraints and deferrable
+        # constraint triggers; on 14 the migrations do not apply at all.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: acct
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: acct
+        options: >-
+          --health-cmd "pg_isready -U acct" --health-interval 5s
+          --health-timeout 5s --health-retries 20
+        ports: ['5432:5432']
+    env:
+      # Two roles. The owner runs migrations; `app_runtime` is what a request would
+      # connect as, and `db:verify` fails if the two are the same — as the owner the
+      # application is a superuser, and a superuser bypasses the migration 0024
+      # row-level security policies entirely.
+      DATABASE_URL: postgresql://acct:ci@localhost:5432/acct
+      APP_DATABASE_URL: postgresql://acct_app:ci_app@localhost:5432/acct
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: '${{ env.PNPM_VERSION }}' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "./packages/*" build
+
+      - name: Apply all migrations to an empty database
+        run: pnpm db:migrate
+
+      - name: Create the application database role
+        run: pnpm db:runtime-role
+
+      - name: Verify checksums, structural drift and the privilege layer
+        # Also asserts what the schema cannot show: that app_runtime is not a
+        # superuser, that no login role holds both app_runtime and the RLS
+        # exemption, and that the Gate C revocations are still in force.
+        run: pnpm db:verify
+
+      - name: Guard suite
+        # The 14 scenarios from Deliverable 2, each in a throwaway database, each
+        # asserted against the constraint its own label names — so a scenario
+        # rejected for an unrelated reason fails rather than passing.
+        run: pnpm db:guards
+
+      - name: Seed and prove the ledger balances
+        run: pnpm db:seed -- --profile small
+
+  test:
+    name: Unit and integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: acct
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: acct_test
+        options: >-
+          --health-cmd "pg_isready -U acct" --health-interval 5s
+          --health-timeout 5s --health-retries 20
+        ports: ['5432:5432']
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 20
+        ports: ['6379:6379']
+    env:
+      DATABASE_URL: postgresql://acct:ci@localhost:5432/acct_test
+      TEST_DATABASE_URL: postgresql://acct:ci@localhost:5432/acct_test
+      # The isolation tests connect as this one. Running them as the owner would
+      # make them pass while proving nothing: RLS does not apply to a superuser.
+      APP_DATABASE_URL: postgresql://acct_app:ci_app@localhost:5432/acct_test
+      TEST_APP_DATABASE_URL: postgresql://acct_app:ci_app@localhost:5432/acct_test
+      REDIS_URL: redis://localhost:6379
+      # Boot-time configuration validation runs before the first test.
+      SESSION_SECRET: ci_only_session_secret_at_least_32_chars
+      MFA_ENCRYPTION_KEY: Y2lfb25seV9tZmFfa2V5XzMyX2J5dGVzX2V4YWN0bHk=
+      API_BASE_URL: http://localhost:3001
+      WEB_BASE_URL: http://localhost:3000
+      S3_ENDPOINT: http://localhost:9000
+      S3_BUCKET: acct-files
+      S3_ACCESS_KEY_ID: ci
+      S3_SECRET_ACCESS_KEY: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: '${{ env.PNPM_VERSION }}' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "./packages/*" build
+      - run: pnpm test
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: '${{ env.PNPM_VERSION }}' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:3001
+
+  security:
+    name: Dependency and secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: pnpm/action-setup@v4
+        with: { version: '${{ env.PNPM_VERSION }}' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+
+      # ADR-0009 §5: CVSS >= 7.0 in a runtime dependency blocks release.
+      # 4.0-6.9 requires a dated waiver with an owner, so it is reported, not fatal.
+      - name: Audit runtime dependencies (CVSS >= 7.0 blocks)
+        run: pnpm audit --prod --audit-level high
+
+      - name: Report moderate advisories (waiver required, not blocking)
+        run: pnpm audit --prod --audit-level moderate || true
+
+      # ADR-0009 §5: "Any detected secret: blocks unconditionally, no waiver."
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Gate H does not run per commit — it needs the `reference` profile, which takes
+  # minutes to seed. It runs nightly and before a release, against a stored baseline.
+  benchmark:
+    name: Gate H benchmark
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: acct
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: acct
+        options: >-
+          --health-cmd "pg_isready -U acct" --health-interval 5s
+          --health-timeout 5s --health-retries 20
+        ports: ['5432:5432']
+    env:
+      DATABASE_URL: postgresql://acct:ci@localhost:5432/acct
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: '${{ env.PNPM_VERSION }}' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "./packages/*" build
+      - run: pnpm db:migrate
+      - run: pnpm db:seed -- --profile small
+      # Fails on a regression beyond 20% against the committed baseline, or on any
+      # p95 beyond its absolute target (ADR-0009 §2).
+      - run: pnpm bench

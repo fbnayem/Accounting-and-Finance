@@ -1,0 +1,811 @@
+{
+ "F-001": {
+  "sev": "S1",
+  "title": "`journal_lines` forbids zero-value lines",
+  "targets": [
+   "contracts/README.md",
+   "contracts/schema/0005_ledger.sql",
+   "contracts/schema/0006_ledger_guards.sql",
+   "contracts/schema/tests/0006_guards_test.sql",
+   "docs/adr/0003-ledger-physical-design.md"
+  ]
+ },
+ "F-002": {
+  "sev": "S1",
+  "title": "`journal_lines` lacks entity, book, period and posting date",
+  "targets": [
+   "contracts/schema/0005_ledger.sql",
+   "docs/adr/0003-ledger-physical-design.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-003": {
+  "sev": "S1",
+  "title": "Nothing prevents a journal line from pointing at another entity's account",
+  "targets": [
+   "contracts/README.md",
+   "contracts/schema/0005_ledger.sql",
+   "contracts/schema/0009_ar.sql",
+   "contracts/schema/tests/0006_guards_test.sql",
+   "docs/adr/0002-tenant-and-entity-isolation.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-004": {
+  "sev": "S1",
+  "title": "No posted-journal immutability mechanism exists",
+  "targets": [
+   "contracts/README.md",
+   "contracts/schema/0005_ledger.sql",
+   "contracts/schema/0006_ledger_guards.sql",
+   "contracts/schema/tests/0006_guards_test.sql",
+   "docs/adr/0003-ledger-physical-design.md"
+  ]
+ },
+ "F-005": {
+  "sev": "S2",
+  "title": "Journal balance is enforced nowhere in the schema",
+  "targets": [
+   "contracts/README.md",
+   "contracts/schema/0005_ledger.sql",
+   "contracts/schema/0006_ledger_guards.sql",
+   "contracts/schema/tests/0006_guards_test.sql",
+   "docs/adr/0003-ledger-physical-design.md"
+  ]
+ },
+ "F-006": {
+  "sev": "S2",
+  "title": "`journal_entries.currency` has undefined semantics",
+  "targets": [
+   "contracts/schema/0005_ledger.sql",
+   "docs/adr/0003-ledger-physical-design.md"
+  ]
+ },
+ "F-007": {
+  "sev": "S3",
+  "title": "Chart of accounts is book-scoped while its neighbours are entity-scoped",
+  "targets": [
+   "contracts/schema/0005_ledger.sql",
+   "docs/adr/0003-ledger-physical-design.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-008": {
+  "sev": "S2",
+  "title": "`journal_entries` has no `branch_id`",
+  "targets": [
+   "contracts/schema/0005_ledger.sql",
+   "docs/adr/0003-ledger-physical-design.md"
+  ]
+ },
+ "F-009": {
+  "sev": "S3",
+  "title": "Three incompatible representations of dimensions coexist",
+  "targets": [
+   "contracts/schema/0005_ledger.sql",
+   "contracts/schema/0009_ar.sql",
+   "contracts/schema/0014_projects_budgets.sql"
+  ]
+ },
+ "F-010": {
+  "sev": "S2",
+  "title": "Overlapping posting rule versions can both be effective",
+  "targets": [
+   "contracts/README.md",
+   "contracts/schema/0000_extensions_and_types.sql",
+   "contracts/schema/0003_organization.sql",
+   "contracts/schema/0005_ledger.sql",
+   "contracts/schema/0015_fx_consolidation.sql",
+   "contracts/schema/0017_workflow_tasks.sql",
+   "contracts/schema/tests/0006_guards_test.sql",
+   "docs/adr/0008-platform-baseline.md"
+  ]
+ },
+ "F-011": {
+  "sev": "S2",
+  "title": "Periods can overlap, and adjustment periods are unmodelled",
+  "targets": [
+   "contracts/README.md",
+   "contracts/schema/0004_periods_books.sql",
+   "contracts/schema/tests/0006_guards_test.sql"
+  ]
+ },
+ "F-012": {
+  "sev": "S2",
+  "title": "Number sequences cannot express their specified scope options",
+  "targets": [
+   "contracts/schema/0003_organization.sql",
+   "docs/adr/0004-concurrency-protocols.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-013": {
+  "sev": "S3",
+  "title": "Nothing enforces exactly one primary accounting book per entity",
+  "targets": [
+   "contracts/README.md",
+   "contracts/schema/0004_periods_books.sql",
+   "contracts/schema/tests/0006_guards_test.sql"
+  ]
+ },
+ "F-014": {
+  "sev": "S3",
+  "title": "Two currency fields with an undefined relationship",
+  "targets": [
+   "contracts/schema/0003_organization.sql",
+   "contracts/schema/0004_periods_books.sql"
+  ]
+ },
+ "F-015": {
+  "sev": "S3",
+  "title": "`fiscal_years` permits overlapping years",
+  "targets": [
+   "contracts/README.md",
+   "contracts/schema/0000_extensions_and_types.sql",
+   "contracts/schema/0004_periods_books.sql",
+   "contracts/schema/tests/0006_guards_test.sql",
+   "docs/adr/0008-platform-baseline.md"
+  ]
+ },
+ "F-016": {
+  "sev": "S2",
+  "title": "Permissions are an untyped JSON array",
+  "targets": [
+   "contracts/schema/0002_identity.sql",
+   "docs/adr/0005-identity-scope.md"
+  ]
+ },
+ "F-017": {
+  "sev": "S3",
+  "title": "Nullable columns in UNIQUE keys defeat the constraint",
+  "targets": [
+   "contracts/README.md",
+   "contracts/schema/0002_identity.sql",
+   "contracts/schema/0003_organization.sql",
+   "contracts/schema/0017_workflow_tasks.sql",
+   "contracts/schema/0019_integrations_migration.sql",
+   "contracts/schema/tests/0006_guards_test.sql",
+   "docs/adr/0008-platform-baseline.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-018": {
+  "sev": "S2",
+  "title": "`users.email` is globally unique across all tenants",
+  "targets": [
+   "contracts/schema/0002_identity.sql",
+   "docs/adr/0005-identity-scope.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-019": {
+  "sev": "S1",
+  "title": "`invoices` cannot determine its own accounting period or book",
+  "targets": [
+   "contracts/openapi.yaml",
+   "contracts/schema/0005_ledger.sql",
+   "contracts/schema/0009_ar.sql",
+   "contracts/schema/0010_ap.sql",
+   "docs/adr/0003-ledger-physical-design.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-020": {
+  "sev": "S1",
+  "title": "The duplicate-bill override workflow is impossible to execute",
+  "targets": [
+   "contracts/openapi.yaml",
+   "contracts/schema/0010_ap.sql"
+  ]
+ },
+ "F-021": {
+  "sev": "S1",
+  "title": "Nothing prevents over-allocation of a payment",
+  "targets": [
+   "contracts/schema/0009_ar.sql",
+   "contracts/schema/0010_ap.sql",
+   "docs/adr/0004-concurrency-protocols.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-022": {
+  "sev": "S2",
+  "title": "`payments` is too thin for foreign-currency settlement",
+  "targets": [
+   "contracts/schema/0009_ar.sql",
+   "contracts/schema/0010_ap.sql",
+   "docs/adr/0007-aggregate-table-granularity.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-023": {
+  "sev": "S2",
+  "title": "`ON DELETE CASCADE` on posted document lines",
+  "targets": [
+   "contracts/schema/0009_ar.sql",
+   "contracts/schema/0010_ap.sql",
+   "contracts/schema/0014_projects_budgets.sql"
+  ]
+ },
+ "F-024": {
+  "sev": "S3",
+  "title": "`tax_transactions` is not book-aware and links backwards",
+  "targets": [
+   "contracts/schema/0008_tax_localization.sql"
+  ]
+ },
+ "F-025": {
+  "sev": "S3",
+  "title": "`tax_rates` has no unique or overlap constraint",
+  "targets": [
+   "contracts/openapi.yaml",
+   "contracts/schema/0000_extensions_and_types.sql",
+   "contracts/schema/0008_tax_localization.sql",
+   "docs/adr/0008-platform-baseline.md"
+  ]
+ },
+ "F-026": {
+  "sev": "S3",
+  "title": "Contacts are organization-scoped with no sharing policy",
+  "targets": [
+   "contracts/schema/0003_organization.sql",
+   "contracts/schema/0007_contacts.sql"
+  ]
+ },
+ "F-027": {
+  "sev": "S3",
+  "title": "Denormalised balances have no supporting constraints",
+  "targets": [
+   "contracts/schema/0009_ar.sql",
+   "contracts/schema/0010_ap.sql"
+  ]
+ },
+ "F-028": {
+  "sev": "S1",
+  "title": "Bank deduplication implements only the fallback, not the primary key",
+  "targets": [
+   "contracts/openapi.yaml",
+   "contracts/schema/0011_banking.sql"
+  ]
+ },
+ "F-029": {
+  "sev": "S2",
+  "title": "`bank_matches` has no integrity constraints",
+  "targets": [
+   "contracts/schema/0011_banking.sql"
+  ]
+ },
+ "F-030": {
+  "sev": "S2",
+  "title": "Completed reconciliations are not locked",
+  "targets": [
+   "contracts/openapi.yaml",
+   "contracts/schema/0011_banking.sql"
+  ]
+ },
+ "F-031": {
+  "sev": "S2",
+  "title": "Serial numbers are not unique and quantity direction is implicit",
+  "targets": [
+   "contracts/schema/0012_inventory.sql"
+  ]
+ },
+ "F-032": {
+  "sev": "S2",
+  "title": "Cost layers can go negative and have no concurrency protocol",
+  "targets": [
+   "contracts/schema/0012_inventory.sql",
+   "docs/adr/0004-concurrency-protocols.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-033": {
+  "sev": "S3",
+  "title": "Item accounting mappings cross a grain boundary",
+  "targets": [
+   "contracts/schema/0008_tax_localization.sql",
+   "contracts/schema/0012_inventory.sql",
+   "contracts/schema/0013_assets.sql"
+  ]
+ },
+ "F-034": {
+  "sev": "S3",
+  "title": "Depreciation idempotency is correct; partial disposal is not modelled",
+  "targets": [
+   "contracts/schema/0013_assets.sql"
+  ]
+ },
+ "F-035": {
+  "sev": "S3",
+  "title": "`fixed_assets.dimensions jsonb`",
+  "targets": [
+   "contracts/schema/0013_assets.sql"
+  ]
+ },
+ "F-036": {
+  "sev": "S1",
+  "title": "Global exchange rates can be duplicated without limit",
+  "targets": [
+   "contracts/schema/0003_organization.sql",
+   "contracts/schema/0015_fx_consolidation.sql",
+   "docs/adr/0008-platform-baseline.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-037": {
+  "sev": "S2",
+  "title": "Only one FX remeasurement run per period is possible, ever",
+  "targets": [
+   "contracts/openapi.yaml",
+   "contracts/schema/0013_assets.sql",
+   "contracts/schema/0015_fx_consolidation.sql",
+   "docs/adr/0004-concurrency-protocols.md"
+  ]
+ },
+ "F-038": {
+  "sev": "S2",
+  "title": "Only one close run per period is possible, ever",
+  "targets": [
+   "contracts/schema/0016_reporting_close.sql",
+   "docs/adr/0004-concurrency-protocols.md"
+  ]
+ },
+ "F-039": {
+  "sev": "S3",
+  "title": "Consolidation maps to a group chart that does not exist",
+  "targets": [
+   "contracts/schema/0015_fx_consolidation.sql"
+  ]
+ },
+ "F-040": {
+  "sev": "S3",
+  "title": "Intercompany pairs are not tenant-checked",
+  "targets": [
+   "contracts/schema/0015_fx_consolidation.sql",
+   "docs/adr/0002-tenant-and-entity-isolation.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-041": {
+  "sev": "S1",
+  "title": "`outbox_events` cannot carry the required event envelope",
+  "targets": [
+   "contracts/events.yaml",
+   "contracts/schema/0001_platform.sql"
+  ]
+ },
+ "F-042": {
+  "sev": "S2",
+  "title": "No consumer checkpoint mechanism",
+  "targets": [
+   "contracts/schema/0001_platform.sql"
+  ]
+ },
+ "F-043": {
+  "sev": "S2",
+  "title": "The audit log is not immutable",
+  "targets": [
+   "contracts/README.md",
+   "contracts/openapi.yaml",
+   "contracts/schema/0001_platform.sql",
+   "contracts/schema/0006_ledger_guards.sql",
+   "contracts/schema/tests/0006_guards_test.sql"
+  ]
+ },
+ "F-044": {
+  "sev": "S3",
+  "title": "Idempotency protocol is unspecified",
+  "targets": [
+   "contracts/openapi.yaml",
+   "contracts/schema/0001_platform.sql"
+  ]
+ },
+ "F-045": {
+  "sev": "S3",
+  "title": "No `sessions` table",
+  "targets": [
+   "contracts/schema/0002_identity.sql",
+   "docs/adr/0005-identity-scope.md"
+  ]
+ },
+ "F-046": {
+  "sev": "S3",
+  "title": "Webhook delivery history is overwritten",
+  "targets": [
+   "contracts/schema/0019_integrations_migration.sql"
+  ]
+ },
+ "F-047": {
+  "sev": "S3",
+  "title": "`webhook_endpoints.subscribed_events` is unvalidated",
+  "targets": [
+   "contracts/openapi.yaml",
+   "contracts/schema/0019_integrations_migration.sql"
+  ]
+ },
+ "F-048": {
+  "sev": "S3",
+  "title": "Tenant-scoped object keys are not enforced",
+  "targets": [
+   "contracts/README.md",
+   "contracts/schema/0001_platform.sql",
+   "contracts/schema/tests/0006_guards_test.sql"
+  ]
+ },
+ "F-049": {
+  "sev": "S3",
+  "title": "Status is an enum on 12 tables and free text on 21",
+  "targets": [
+   "contracts/schema/0000_extensions_and_types.sql",
+   "contracts/schema/0013_assets.sql",
+   "contracts/schema/0014_projects_budgets.sql",
+   "docs/adr/0007-aggregate-table-granularity.md"
+  ]
+ },
+ "F-050": {
+  "sev": "S3",
+  "title": "Polymorphic references have no integrity strategy",
+  "targets": [
+   "contracts/schema/0001_platform.sql",
+   "contracts/schema/0005_ledger.sql",
+   "docs/adr/0002-tenant-and-entity-isolation.md"
+  ]
+ },
+ "F-051": {
+  "sev": "S3",
+  "title": "Numeric precision varies and rounding boundaries are undefined",
+  "targets": [
+   "contracts/schema/0003_organization.sql",
+   "docs/adr/0006-money-precision-and-rounding.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-101": {
+  "sev": "S3",
+  "title": "Twenty-two events exist under two different names",
+  "targets": [
+   "contracts/events.yaml"
+  ]
+ },
+ "F-102": {
+  "sev": "S2",
+  "title": "Twenty-five events are specified in prose but exist in no catalog",
+  "targets": [
+   "contracts/events.yaml"
+  ]
+ },
+ "F-103": {
+  "sev": "S3",
+  "title": "The event envelope requires fields the outbox table cannot store",
+  "targets": [
+   "contracts/schema/0001_platform.sql"
+  ]
+ },
+ "F-104": {
+  "sev": "S4",
+  "title": "Catalog groups do not map cleanly to phases or modules",
+  "targets": [
+   "contracts/README.md"
+  ]
+ },
+ "F-105": {
+  "sev": "S3",
+  "title": "Nine routes exist under two different paths",
+  "targets": [
+   "contracts/openapi.yaml"
+  ]
+ },
+ "F-106": {
+  "sev": "S2",
+  "title": "Twenty-nine routes are specified in prose but absent from the catalog",
+  "targets": [
+   "contracts/openapi.yaml",
+   "contracts/schema/0014_projects_budgets.sql"
+  ]
+ },
+ "F-107": {
+  "sev": "S1",
+  "title": "`POST /tax-returns` is specified but the catalog exposes only `GET`",
+  "targets": [
+   "contracts/openapi.yaml",
+   "contracts/schema/0008_tax_localization.sql"
+  ]
+ },
+ "F-108": {
+  "sev": "S3",
+  "title": "The catalog omits the API conventions the docs mandate",
+  "targets": [
+   "contracts/openapi.yaml",
+   "docs/adr/0005-identity-scope.md"
+  ]
+ },
+ "F-109": {
+  "sev": "S4",
+  "title": "Route naming is inconsistent within the catalog itself",
+  "targets": [
+   "contracts/README.md"
+  ]
+ },
+ "F-201": {
+  "sev": "S2",
+  "title": "The schema blueprint covers 44% of the specified domain model",
+  "targets": [
+   "contracts/schema/0013_assets.sql"
+  ]
+ },
+ "F-202": {
+  "sev": "S2",
+  "title": "Phase 3 is the largest single gap and it is on the critical path",
+  "targets": [
+   "contracts/schema/0008_tax_localization.sql"
+  ]
+ },
+ "F-203": {
+  "sev": "S1",
+  "title": "Phase 1 is 37% covered, and the gap includes the accounting policy container",
+  "targets": [
+   "contracts/schema/0001_platform.sql",
+   "contracts/schema/0003_organization.sql",
+   "contracts/schema/0020_saas_admin.sql",
+   "docs/adr/0001-accounting-framework-and-retained-earnings.md"
+  ]
+ },
+ "F-204": {
+  "sev": "S2",
+  "title": "Phase 6 is 30% covered and it is where four gates are proven",
+  "targets": [
+   "contracts/schema/0016_reporting_close.sql",
+   "contracts/schema/0017_workflow_tasks.sql"
+  ]
+ },
+ "F-205": {
+  "sev": "S3",
+  "title": "Phase 10 (Bangladesh) has zero schema coverage",
+  "targets": [
+   "contracts/schema/0021_localization_bd.sql"
+  ]
+ },
+ "F-206": {
+  "sev": "S3",
+  "title": "Four generic tables absorb 14 distinct specified objects",
+  "targets": [
+   "docs/adr/0007-aggregate-table-granularity.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-207": {
+  "sev": "S2",
+  "title": "`Permission` has no table, but doc 02 requires it to be enumerable",
+  "targets": [
+   "contracts/schema/0002_identity.sql",
+   "docs/adr/0005-identity-scope.md"
+  ]
+ },
+ "F-301": {
+  "sev": "S4",
+  "title": "Seventy-three percent of obligations are directly testable",
+  "targets": [
+   "contracts/README.md"
+  ]
+ },
+ "F-302": {
+  "sev": "S2",
+  "title": "Gate H defines no targets, and defers the definition indefinitely",
+  "targets": [
+   "docs/adr/0009-performance-baselines.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-303": {
+  "sev": "S3",
+  "title": "No seeded dataset specification exists",
+  "targets": [
+   "docs/adr/0009-performance-baselines.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-304": {
+  "sev": "S2",
+  "title": "RPO and RTO are required per tier, and no tiers exist",
+  "targets": [
+   "contracts/schema/0020_saas_admin.sql",
+   "docs/adr/0009-performance-baselines.md"
+  ]
+ },
+ "F-305": {
+  "sev": "S2",
+  "title": "Alert thresholds are required and unspecified",
+  "targets": [
+   "contracts/schema/0020_saas_admin.sql",
+   "docs/adr/0009-performance-baselines.md"
+  ]
+ },
+ "F-306": {
+  "sev": "S3",
+  "title": "\"No unresolved release-blocking findings\" has no severity definition",
+  "targets": [
+   "docs/adr/0009-performance-baselines.md"
+  ]
+ },
+ "F-307": {
+  "sev": "S2",
+  "title": "Every AI automation threshold is deferred to itself",
+  "targets": [
+   "contracts/schema/0018_ai.sql",
+   "docs/adr/0009-performance-baselines.md"
+  ]
+ },
+ "F-308": {
+  "sev": "S3",
+  "title": "\"Confidence\" has no defined scale or calibration requirement",
+  "targets": [
+   "contracts/schema/0018_ai.sql",
+   "docs/adr/0009-performance-baselines.md"
+  ]
+ },
+ "F-309": {
+  "sev": "S2",
+  "title": "Matching and reconciliation tolerances are never quantified",
+  "targets": [
+   "contracts/schema/0003_organization.sql"
+  ]
+ },
+ "F-310": {
+  "sev": "S2",
+  "title": "Approval thresholds, credit limits and capitalization thresholds have no defaults",
+  "targets": [
+   "contracts/schema/0003_organization.sql",
+   "contracts/schema/0014_projects_budgets.sql"
+  ]
+ },
+ "F-311": {
+  "sev": "S3",
+  "title": "AR aging buckets are stated as a default but not as a constraint",
+  "targets": [
+   "contracts/schema/0003_organization.sql"
+  ]
+ },
+ "F-312": {
+  "sev": "S3",
+  "title": "The Definition of Done has no enforcement mechanism",
+  "targets": [
+   "contracts/README.md"
+  ]
+ },
+ "F-401": {
+  "sev": "S1",
+  "title": "The accounting framework is never named",
+  "targets": [
+   "docs/adr/0001-accounting-framework-and-retained-earnings.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-402": {
+  "sev": "S1",
+  "title": "The retained earnings and year-end rollover policy is undefined",
+  "targets": [
+   "docs/adr/0001-accounting-framework-and-retained-earnings.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-403": {
+  "sev": "S2",
+  "title": "Period resolution for ambiguous posting dates is unspecified",
+  "targets": [
+   "contracts/README.md",
+   "contracts/schema/0004_periods_books.sql",
+   "contracts/schema/tests/0006_guards_test.sql",
+   "docs/adr/0003-ledger-physical-design.md"
+  ]
+ },
+ "F-404": {
+  "sev": "S2",
+  "title": "There is no general archival, retention or deletion policy",
+  "targets": [
+   "contracts/schema/0001_platform.sql",
+   "contracts/schema/0011_banking.sql",
+   "contracts/schema/0020_saas_admin.sql"
+  ]
+ },
+ "F-405": {
+  "sev": "S2",
+  "title": "No UI internationalisation architecture",
+  "targets": [
+   "contracts/schema/0002_identity.sql",
+   "contracts/schema/0017_workflow_tasks.sql"
+  ]
+ },
+ "F-406": {
+  "sev": "S2",
+  "title": "No accessibility standard is stated",
+  "targets": [
+   "contracts/README.md"
+  ]
+ },
+ "F-407": {
+  "sev": "S3",
+  "title": "No specification of the accounting grid's behaviour",
+  "targets": [
+   "contracts/README.md"
+  ]
+ },
+ "F-408": {
+  "sev": "S2",
+  "title": "No data residency or cross-border transfer policy",
+  "targets": [
+   "contracts/schema/0001_platform.sql"
+  ]
+ },
+ "F-409": {
+  "sev": "S2",
+  "title": "No AI cost control",
+  "targets": [
+   "contracts/schema/0001_platform.sql",
+   "contracts/schema/0018_ai.sql"
+  ]
+ },
+ "F-410": {
+  "sev": "S3",
+  "title": "No PII inventory or data subject request process",
+  "targets": [
+   "contracts/schema/0020_saas_admin.sql"
+  ]
+ },
+ "F-411": {
+  "sev": "S3",
+  "title": "Prompt injection controls are required but not designed",
+  "targets": [
+   "contracts/schema/0018_ai.sql"
+  ]
+ },
+ "F-412": {
+  "sev": "S3",
+  "title": "No pricing, packaging or target segment definition",
+  "targets": [
+   "contracts/README.md"
+  ]
+ },
+ "F-413": {
+  "sev": "S3",
+  "title": "No support, SLA or incident communication model",
+  "targets": [
+   "contracts/README.md"
+  ]
+ },
+ "F-414": {
+  "sev": "S3",
+  "title": "No branching, versioning or release cadence model",
+  "targets": [
+   "docs/adr/0008-platform-baseline.md",
+   "docs/adr/README.md"
+  ]
+ },
+ "F-501": {
+  "sev": "S4",
+  "title": "Twenty-two `docs/*.md` files are absent but their content is not lost",
+  "targets": [
+   "contracts/README.md"
+  ]
+ },
+ "F-502": {
+  "sev": "S3",
+  "title": "Twelve `phases/*.md` handoff files are absent, content unverified",
+  "targets": [
+   "contracts/README.md"
+  ]
+ },
+ "F-503": {
+  "sev": "S4",
+  "title": "`README.md` absent",
+  "targets": [
+   "contracts/README.md"
+  ]
+ },
+ "F-504": {
+  "sev": "S4",
+  "title": "Manifest paths do not match the delivered layout",
+  "targets": [
+   "contracts/README.md"
+  ]
+ }
+}

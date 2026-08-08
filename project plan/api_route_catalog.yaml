@@ -1,0 +1,225 @@
+version: v1
+base_path: /api/v1
+conventions:
+  auth: Bearer token/session; OAuth2 for public integrations
+  tenant_scope: required on every business resource
+  idempotency: Idempotency-Key required/recommended on retriable financial POST commands
+  pagination: cursor based for large collections
+  errors: structured code, message, field_errors, correlation_id
+  dates: ISO-8601
+  money: decimal strings in API contracts, never binary floating point
+  optimistic_concurrency: version/etag on mutable setup and draft resources where useful
+
+routes:
+  auth:
+    - POST /auth/login
+    - POST /auth/refresh
+    - POST /auth/logout
+    - POST /auth/mfa/challenge
+    - POST /auth/mfa/verify
+  organizations:
+    - GET /organizations
+    - POST /organizations
+    - GET /organizations/{id}
+    - PATCH /organizations/{id}
+    - GET /legal-entities
+    - POST /legal-entities
+    - GET /branches
+    - POST /branches
+  iam:
+    - GET /users
+    - POST /users/invite
+    - GET /roles
+    - POST /roles
+    - PATCH /roles/{id}
+    - GET /permissions
+  finance_setup:
+    - GET /fiscal-years
+    - POST /fiscal-years
+    - GET /accounting-periods
+    - POST /accounting-periods/{id}/soft-close
+    - POST /accounting-periods/{id}/hard-close
+    - POST /accounting-periods/{id}/reopen
+    - GET /currencies
+    - GET /exchange-rates
+    - POST /exchange-rates
+    - GET /accounting-books
+  ledger:
+    - GET /accounts
+    - POST /accounts
+    - PATCH /accounts/{id}
+    - GET /dimensions
+    - POST /dimensions
+    - GET /dimension-values
+    - POST /dimension-values
+    - GET /journals
+    - POST /journals
+    - GET /journals/{id}
+    - POST /journals/{id}/submit
+    - POST /journals/{id}/approve
+    - POST /journals/{id}/post
+    - POST /journals/{id}/reverse
+    - POST /accounting-events/simulate
+    - GET /ledger/accounts/{id}/activity
+  customers_ar:
+    - GET /customers
+    - POST /customers
+    - GET /quotes
+    - POST /quotes
+    - POST /quotes/{id}/accept
+    - GET /sales-orders
+    - POST /sales-orders
+    - GET /invoices
+    - POST /invoices
+    - GET /invoices/{id}
+    - PATCH /invoices/{id}
+    - POST /invoices/{id}/approve
+    - POST /invoices/{id}/post
+    - POST /invoices/{id}/send
+    - POST /invoices/{id}/void-or-credit
+    - GET /credit-notes
+    - POST /credit-notes
+    - GET /customer-receipts
+    - POST /customer-receipts
+    - POST /customer-receipts/{id}/allocate
+    - POST /customer-refunds
+  vendors_ap:
+    - GET /vendors
+    - POST /vendors
+    - GET /purchase-requisitions
+    - POST /purchase-requisitions
+    - GET /purchase-orders
+    - POST /purchase-orders
+    - POST /purchase-orders/{id}/approve
+    - GET /goods-receipts
+    - POST /goods-receipts
+    - GET /vendor-bills
+    - POST /vendor-bills
+    - POST /vendor-bills/{id}/match
+    - POST /vendor-bills/{id}/approve
+    - POST /vendor-bills/{id}/post
+    - GET /vendor-credits
+    - POST /vendor-credits
+    - GET /payment-runs
+    - POST /payment-runs
+    - POST /payment-runs/{id}/approve
+    - POST /payment-runs/{id}/execute
+    - GET /expense-claims
+    - POST /expense-claims
+  banking:
+    - GET /bank-accounts
+    - POST /bank-accounts
+    - POST /bank-accounts/{id}/imports
+    - POST /bank-accounts/{id}/sync
+    - GET /bank-transactions
+    - GET /bank-transactions/{id}/matches
+    - POST /bank-transactions/{id}/match
+    - POST /bank-transactions/{id}/categorize
+    - POST /bank-transactions/{id}/split
+    - GET /bank-reconciliations
+    - POST /bank-reconciliations
+    - POST /bank-reconciliations/{id}/complete
+    - POST /bank-transfers
+  tax:
+    - GET /tax-codes
+    - POST /tax-codes
+    - GET /tax-rates
+    - POST /tax-rates
+    - POST /tax/calculate
+    - GET /tax-transactions
+    - GET /tax-returns
+    - POST /tax-returns/{id}/prepare
+    - POST /tax-returns/{id}/approve
+    - POST /tax-returns/{id}/mark-filed
+  inventory:
+    - GET /items
+    - POST /items
+    - GET /warehouses
+    - POST /warehouses
+    - POST /inventory/receipts
+    - POST /inventory/issues
+    - POST /inventory/transfers
+    - POST /inventory/adjustments
+    - POST /inventory/counts
+    - GET /inventory/on-hand
+    - GET /inventory/valuation
+  assets:
+    - GET /assets
+    - POST /assets
+    - POST /assets/{id}/capitalize
+    - POST /assets/{id}/transfer
+    - POST /assets/depreciation-runs
+    - POST /assets/{id}/impair
+    - POST /assets/{id}/revalue
+    - POST /assets/{id}/dispose
+  projects_budgets:
+    - GET /projects
+    - POST /projects
+    - GET /budgets
+    - POST /budgets
+    - POST /budgets/{id}/approve
+    - POST /budgets/{id}/revise
+    - GET /budgets/{id}/variance
+  workflows:
+    - GET /approval-workflows
+    - POST /approval-workflows
+    - GET /approval-tasks
+    - POST /approval-tasks/{id}/approve
+    - POST /approval-tasks/{id}/reject
+    - POST /approval-tasks/{id}/delegate
+  close:
+    - GET /close-runs
+    - POST /close-runs
+    - GET /close-runs/{id}/tasks
+    - POST /close-tasks/{id}/complete
+    - POST /close-runs/{id}/finalize
+  consolidation:
+    - GET /consolidation-groups
+    - POST /consolidation-groups
+    - GET /consolidation-runs
+    - POST /consolidation-runs
+    - POST /consolidation-runs/{id}/translate
+    - POST /consolidation-runs/{id}/eliminate
+    - POST /consolidation-runs/{id}/finalize
+  reports:
+    - GET /reports/trial-balance
+    - GET /reports/general-ledger
+    - GET /reports/profit-loss
+    - GET /reports/balance-sheet
+    - GET /reports/cash-flow
+    - GET /reports/ar-aging
+    - GET /reports/ap-aging
+    - GET /reports/tax
+    - GET /reports/inventory-valuation
+    - GET /reports/fixed-assets
+    - GET /reports/budget-vs-actual
+  ai:
+    - POST /ai/documents/extract
+    - POST /ai/coding/suggest
+    - POST /ai/reconciliation/suggest
+    - POST /ai/questions
+    - GET /ai/anomalies
+    - POST /ai/actions/{id}/approve
+    - POST /ai/actions/{id}/reject
+  files:
+    - POST /files/upload-url
+    - POST /files/{id}/complete
+    - GET /files/{id}
+    - DELETE /files/{id}
+  integrations:
+    - GET /integrations
+    - POST /integrations/{provider}/connect
+    - POST /integrations/{provider}/disconnect
+    - POST /integrations/{provider}/sync
+    - GET /webhook-endpoints
+    - POST /webhook-endpoints
+    - GET /webhook-deliveries
+    - POST /webhook-deliveries/{id}/replay
+  migration:
+    - GET /migration-jobs
+    - POST /migration-jobs
+    - POST /migration-jobs/{id}/upload
+    - POST /migration-jobs/{id}/validate
+    - POST /migration-jobs/{id}/import
+    - GET /migration-jobs/{id}/reconciliation
+    - POST /migration-jobs/{id}/cutover

@@ -1,0 +1,516 @@
+/*
+ * Phase 1 — the application shell and the administration screens.
+ *
+ * ADR-0010 governs everything here. The criterion that shaped a rule is named
+ * where the rule is, so a later change can tell what it would be breaking.
+ */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/*
+ * WCAG 2.4.7 Focus Visible and 2.4.11 Focus Not Obscured. `:focus-visible` rather
+ * than `:focus`, so a mouse click does not leave a ring behind; an outline with an
+ * offset rather than a background change, so the indicator has its own 3:1
+ * contrast against whatever it happens to sit on.
+ */
+:where(a, button, input, select, textarea, summary):focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: var(--radius-sm);
+}
+
+/* --- shell ---------------------------------------------------------------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: 16rem 1fr;
+  min-height: 100vh;
+}
+
+.shell-nav {
+  background: var(--surface-raised);
+  border-right: 1px solid var(--border-subtle);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.shell-brand {
+  font-weight: 600;
+  margin: 0;
+}
+
+.shell-tenant {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  margin: 0;
+}
+
+.shell-section h2 {
+  font-size: var(--font-size-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-2);
+}
+
+.shell-section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shell-section a {
+  display: block;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  text-decoration: none;
+  /* WCAG 2.5.8: 24x24 CSS pixels minimum for a pointer target. */
+  min-height: 24px;
+}
+
+.shell-section a:hover {
+  background: var(--surface-sunken);
+  text-decoration: underline;
+}
+
+/*
+ * The current page is marked with aria-current, so the styling hangs off that
+ * attribute rather than a parallel class. One source of truth for "which page is
+ * this", and it is the one assistive technology reads.
+ */
+.shell-section a[aria-current='page'] {
+  background: var(--surface-sunken);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--color-accent-600);
+}
+
+.shell-footer {
+  margin-top: auto;
+}
+
+.shell-content {
+  padding: var(--space-8);
+  max-width: 72rem;
+}
+
+/* --- page furniture ------------------------------------------------------- */
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.page-description {
+  color: var(--text-secondary);
+  margin: var(--space-1) 0 0;
+  max-width: 60ch;
+}
+
+h2 {
+  font-size: var(--font-size-lg);
+  margin: var(--space-8) 0 var(--space-2);
+}
+
+.muted {
+  color: var(--text-secondary);
+}
+
+.empty {
+  color: var(--text-secondary);
+  padding: var(--space-4);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.table-scroll {
+  overflow-x: auto;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+caption {
+  text-align: left;
+  padding: var(--space-3);
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+/* --- forms ---------------------------------------------------------------- */
+
+.field {
+  margin-bottom: var(--space-4);
+  max-width: 32rem;
+}
+
+.field label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: var(--space-1);
+}
+
+.field input,
+.field select {
+  width: 100%;
+  padding: var(--space-2);
+  min-height: 2.5rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+/* Not colour alone: the message below the field carries the meaning (WCAG 1.4.1). */
+.field input[aria-invalid='true'],
+.field select[aria-invalid='true'] {
+  border-color: var(--text-danger);
+  border-width: 2px;
+}
+
+.field-hint {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  margin: var(--space-1) 0 0;
+}
+
+.field-error {
+  color: var(--text-danger);
+  font-size: var(--font-size-sm);
+  margin: var(--space-1) 0 0;
+  font-weight: 600;
+}
+
+.field-required {
+  color: var(--text-danger);
+}
+
+.button {
+  font: inherit;
+  padding: var(--space-2) var(--space-4);
+  min-height: 2.5rem;
+  min-width: 2.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--surface-sunken);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.button-primary {
+  background: var(--color-accent-600);
+  border-color: var(--color-accent-700);
+  color: var(--text-inverse);
+}
+
+.button-primary:hover:not(:disabled) {
+  background: var(--color-accent-700);
+}
+
+.button-danger {
+  background: var(--surface-raised);
+  border-color: var(--color-danger-600);
+  color: var(--text-danger);
+}
+
+.button-row {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* --- banners and status --------------------------------------------------- */
+
+.banner {
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+}
+
+.banner-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.banner-meta {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.banner-danger {
+  border-color: var(--color-danger-600);
+  background: var(--color-danger-50);
+}
+
+.banner-success {
+  border-color: var(--color-success-700);
+  background: var(--color-success-50);
+}
+
+.banner-warning {
+  border-color: var(--color-warning-700);
+  background: var(--color-warning-50);
+}
+
+.status {
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+}
+
+.status-ok {
+  color: var(--text-success);
+}
+
+.status-closed {
+  color: var(--text-danger);
+}
+
+.status-pending {
+  color: var(--text-secondary);
+}
+
+.tag {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.tag-danger {
+  color: var(--text-danger);
+}
+
+.token {
+  word-break: break-all;
+  display: block;
+  padding: var(--space-2);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+}
+
+/* --- auth pages ----------------------------------------------------------- */
+
+.auth-page {
+  max-width: 32rem;
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-4);
+}
+
+.auth-alt {
+  color: var(--text-secondary);
+  margin: var(--space-4) 0 0;
+}
+
+.tenant-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* --- role editor ---------------------------------------------------------- */
+
+.permission-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: var(--space-4);
+}
+
+.permission-grid fieldset {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.permission-grid legend {
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+  text-transform: capitalize;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px 0;
+  min-height: 24px;
+}
+
+/*
+ * WCAG 2.3.3: honour a stated preference for reduced motion rather than deciding
+ * on someone's behalf that a transition is harmless.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 60rem) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .shell-content {
+    padding: var(--space-4);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Phase 2 — the accounting grid and the ledger reports.
+
+   Kept in the same stylesheet rather than a new one: the tokens are shared, and
+   a second file is where a second, slightly different set of colours starts.
+   --------------------------------------------------------------------------- */
+
+.grid-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Horizontal scroll on the table itself, so the page body never scrolls sideways
+   on a narrow screen (the grid is deliberately wide). */
+.journal-grid {
+  min-width: 60rem;
+}
+
+.grid-wrapper,
+.table-wrapper {
+  overflow-x: auto;
+}
+
+.journal-grid td {
+  vertical-align: top;
+}
+
+.journal-grid input,
+.journal-grid select {
+  width: 100%;
+  min-width: 8rem;
+}
+
+.journal-grid input.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  min-width: 7rem;
+}
+
+.journal-grid .grid-line-no {
+  width: 3rem;
+  text-align: right;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.journal-grid tfoot td {
+  font-weight: 600;
+  border-top: 2px solid var(--border-strong);
+}
+
+/* The balance line. A border and a word, never colour alone (WCAG 1.4.1). */
+.grid-balance {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-left: 4px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.summary-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.summary-list > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.summary-list dt {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.summary-list dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+textarea {
+  width: 100%;
+  font-family: var(--font-numeric);
+  font-size: var(--font-size-sm);
+  padding: var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+textarea:focus-visible {
+  outline: 2px solid var(--focus-ring-color);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+   Phase 3 — the document line grid (invoices and vendor bills).
+
+   The grid reuses the journal grid's input styling; the additions below are
+   only what a document grid has that a journal grid does not.
+   --------------------------------------------------------------------------- */
+
+/* One more column than the journal grid, so it needs a little more room before
+   its wrapper starts scrolling. */
+.document-grid {
+  min-width: 66rem;
+}
+
+/* The inclusive-tax checkbox: sized for WCAG 2.5.8 rather than stretched to the
+   full cell width the grid gives text inputs. */
+.document-grid input[type='checkbox'] {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@acct/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "pnpm generate && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "generate": "tsx scripts/generate.ts",
+    "check": "tsx scripts/check.ts",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "permissions": "tsx scripts/permissions-migration.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8",
+    "yaml": "^2.6.1"
+  }
+}

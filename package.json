@@ -1,0 +1,50 @@
+{
+  "name": "accounting-platform",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Multi-tenant SaaS accounting and ERP platform",
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "stack:up": "node scripts/stack.mjs up",
+    "stack:down": "node scripts/stack.mjs down",
+    "stack:reset": "node scripts/stack.mjs reset",
+    "stack:logs": "docker compose -f infra/docker-compose.yml logs -f",
+    "dev": "pnpm --parallel --filter \"./apps/*\" dev",
+    "build": "pnpm -r --filter \"./packages/*\" build && pnpm -r --filter \"./apps/*\" build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "pnpm -r test",
+    "test:unit": "pnpm -r test:unit",
+    "test:integration": "pnpm -r test:integration",
+    "db:migrate": "pnpm --filter @acct/database migrate",
+    "db:status": "pnpm --filter @acct/database migrate:status",
+    "db:verify": "pnpm --filter @acct/database migrate:verify",
+    "db:runtime-role": "pnpm --filter @acct/database runtime-role",
+    "db:guards": "pnpm --filter @acct/database guards",
+    "db:seed": "pnpm --filter @acct/testing seed",
+    "bench": "pnpm --filter @acct/testing bench",
+    "contracts:check": "pnpm --filter @acct/contracts check",
+    "contracts:generate": "pnpm --filter @acct/contracts generate",
+    "contracts:permissions": "pnpm --filter @acct/contracts permissions",
+    "dod:check": "node scripts/definition-of-done.mjs",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm contracts:check && pnpm dod:check && pnpm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/node": "^22.10.5",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0",
+    "vitest": "^2.1.8"
+  }
+}

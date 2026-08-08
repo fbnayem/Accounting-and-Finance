@@ -1,0 +1,41 @@
+{
+  "name": "@acct/database",
+  "version": "0.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "acct-db": "./dist/bin/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "migrate": "tsx src/bin/cli.ts up",
+    "migrate:status": "tsx src/bin/cli.ts status",
+    "migrate:verify": "tsx src/bin/cli.ts verify",
+    "migrate:snapshot": "tsx src/bin/cli.ts snapshot",
+    "guards": "tsx src/bin/cli.ts guards",
+    "runtime-role": "tsx src/bin/cli.ts runtime-role",
+    "test": "vitest run",
+    "test:unit": "vitest run src/checksum.test.ts src/errors.test.ts",
+    "test:integration": "vitest run src/integration"
+  },
+  "dependencies": {
+    "@acct/config": "workspace:*",
+    "@acct/contracts": "workspace:*",
+    "@acct/domain": "workspace:*",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

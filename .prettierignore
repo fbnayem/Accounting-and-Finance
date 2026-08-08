@@ -1,0 +1,20 @@
+node_modules
+dist
+.next
+coverage
+pnpm-lock.yaml
+
+# The v1.0 handoff is immutable — never reformatted (contracts/README.md rule 1).
+project plan/
+
+# The audit is a dated record of findings; reformatting would churn its diffs.
+audit/
+
+# Canonical contracts use dense flow-style YAML deliberately; Prettier would
+# expand 260 operations into thousands of lines and destroy reviewability.
+contracts/openapi.yaml
+contracts/events.yaml
+
+# Generated.
+packages/contracts/src/generated/
+packages/database/prisma/schema.prisma

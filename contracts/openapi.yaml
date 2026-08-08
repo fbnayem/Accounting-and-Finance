@@ -1,0 +1,609 @@
+openapi: 3.1.0
+
+# Canonical API Route Contract
+#
+# SINGLE SOURCE OF TRUTH. Supersedes `project plan/blueprints/api_route_catalog.yaml`
+# and the "## APIs" sections of the module specifications, which disagreed on 9 paths,
+# omitted 29 routes the prose requires, and left `POST /tax-returns` undefined so the
+# tax-return lifecycle had no entry point (audit F-105, F-106, F-107).
+#
+# Every operation carries:
+#   x-permission   the permission required. The `permissions` registry table is GENERATED
+#                  from these values (ADR-0005), so route and permission cannot drift and
+#                  Gate B's "authorization tests cover every mutation route" is provable.
+#   x-idempotency  required | recommended | n-a. Derived from doc 01's list of operations
+#                  that must be idempotent when retried (F-108).
+#   x-phase        the phase that delivers it.
+#
+# Request/response bodies reference components below. Bodies for resources whose tables are
+# defined in contracts/schema/ are fully typed; the remainder are typed during the phase that
+# builds them, from the same schema. Body detail is deliberately generated from the schema
+# rather than authored twice.
+
+info:
+  title: Accounting Platform API
+  version: 1.0.0
+  description: |
+    Multi-tenant accounting platform. All business resources are tenant-scoped and most are
+    legal-entity scoped; scope is taken from the authenticated session, never from a request
+    parameter. Money is carried as decimal strings, never JSON numbers (ADR-0006).
+  x-supersedes:
+    - project plan/blueprints/api_route_catalog.yaml
+
+servers:
+  - url: https://api.example.com/v1
+    description: Production
+  - url: https://sandbox.api.example.com/v1
+    description: Sandbox (doc 15 developer platform)
+
+security:
+  - sessionBearer: []
+  - oauth2: []
+
+tags:
+  - {name: Auth,          x-phase: 1}
+  - {name: Organization,  x-phase: 1}
+  - {name: IAM,           x-phase: 1}
+  - {name: FinanceSetup,  x-phase: 1}
+  - {name: Ledger,        x-phase: 2}
+  - {name: AR,            x-phase: 3}
+  - {name: AP,            x-phase: 3}
+  - {name: Tax,           x-phase: 3}
+  - {name: Localization,  x-phase: 3}
+  - {name: Files,         x-phase: 3}
+  - {name: Banking,       x-phase: 4}
+  - {name: Inventory,     x-phase: 5}
+  - {name: Assets,        x-phase: 5}
+  - {name: Projects,      x-phase: 5}
+  - {name: Reports,       x-phase: 6}
+  - {name: Workflow,      x-phase: 6}
+  - {name: Close,         x-phase: 6}
+  - {name: Audit,         x-phase: 6}
+  - {name: Consolidation, x-phase: 7}
+  - {name: AI,            x-phase: 8}
+  - {name: Integrations,  x-phase: 9}
+  - {name: Migration,     x-phase: 9}
+  - {name: PlatformAdmin, x-phase: 1}
+
+# ===========================================================================
+paths:
+
+  # ---------- Auth (phase 1) ----------
+  /auth/login:              {post: {operationId: login,        tags: [Auth], security: [], x-permission: null, x-idempotency: n-a, x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /auth/refresh:            {post: {operationId: refreshToken, tags: [Auth], security: [], x-permission: null, x-idempotency: n-a, x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /auth/logout:             {post: {operationId: logout,       tags: [Auth], x-permission: null, x-self-service: true, x-idempotency: n-a, x-phase: 1, description: "Authenticated but permission-free: ends the caller's own session. Revoking someone else's session is revokeSession, which requires session.revoke.", responses: {'204': {$ref: '#/components/responses/NoContent'}, default: {$ref: '#/components/responses/Error'}}}}
+  /auth/mfa/challenge:      {post: {operationId: mfaChallenge, tags: [Auth], security: [], x-permission: null, x-idempotency: n-a, x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /auth/mfa/verify:         {post: {operationId: mfaVerify,    tags: [Auth], security: [], x-permission: null, x-idempotency: n-a, x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /auth/tenants:            {get:  {operationId: listMyTenants, tags: [Auth], x-permission: null, x-idempotency: n-a, x-phase: 1, description: "Tenant selection step; ADR-0005 global identity.", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /auth/signup:             {post: {operationId: signUp,       tags: [Auth], security: [], x-permission: null, x-idempotency: recommended, x-phase: 1, x-added-by: F-603, description: "Creates a user, a tenant, its Owner role and the first membership in one transaction. doc 21 Phase 1 requires \"tenant/account creation\" and contracts/events.yaml defines tenant.created, but no route produced either; doc 02's acceptance criterion is that a new organization reaches posting-ready status without direct database work, which needs a first door.", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /auth/tenants/{id}/select: {post: {operationId: selectTenant, tags: [Auth], x-permission: null, x-self-service: true, x-idempotency: n-a, x-phase: 1, x-added-by: F-602, description: "Binds the caller's own session to one tenant. ADR-0005 makes login a two-step flow - authenticate, then select tenant - and the selected tenant is bound to the session rather than to the credential, but no route existed to perform step two.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /auth/invitations/accept: {post: {operationId: acceptInvitation, tags: [Auth], security: [], x-permission: null, x-idempotency: recommended, x-phase: 1, x-added-by: F-604, description: "Redeems an invitation token, creating or attaching the user and activating the membership. doc 02 requires an \"Invite/accept flow\" and POST /users/invite delivered only the invite half, so an invited user had no way to join. The token travels in the body, not the path, because a URL is logged by every proxy in between and this one is a credential.", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /sessions:                {get:  {operationId: listSessions,  tags: [Auth], x-permission: session.view, x-idempotency: n-a, x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /sessions/{id}/revoke:    {post: {operationId: revokeSession, tags: [Auth], x-permission: session.revoke, x-idempotency: recommended, x-phase: 1, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'204': {$ref: '#/components/responses/NoContent'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- Organization (phase 1) ----------
+  /organizations:
+    get:  {operationId: listOrganizations,  tags: [Organization], x-permission: organization.view,   x-idempotency: n-a,         x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createOrganization, tags: [Organization], x-permission: organization.create, x-idempotency: recommended, x-phase: 1, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /organizations/{id}:
+    get:   {operationId: getOrganization,    tags: [Organization], x-permission: organization.view,      x-idempotency: n-a, x-phase: 1, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+    patch: {operationId: updateOrganization, tags: [Organization], x-permission: organization.configure, x-idempotency: n-a, x-phase: 1, parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IfMatch'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+  /legal-entities:
+    get:  {operationId: listLegalEntities,  tags: [Organization], x-permission: legal_entity.view,   x-idempotency: n-a,         x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createLegalEntity,  tags: [Organization], x-permission: legal_entity.create, x-idempotency: recommended, x-phase: 1, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /legal-entities/{id}:
+    get:   {operationId: getLegalEntity,    tags: [Organization], x-permission: legal_entity.view,      x-idempotency: n-a, x-phase: 1, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+    patch: {operationId: updateLegalEntity, tags: [Organization], x-permission: legal_entity.configure, x-idempotency: n-a, x-phase: 1, parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IfMatch'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+  /legal-entities/{id}/activate:
+    post: {operationId: activateLegalEntity, tags: [Organization], x-permission: legal_entity.configure, x-idempotency: recommended, x-phase: 1, description: "Posting stays disabled until activation (doc 02).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+  /branches:
+    get:  {operationId: listBranches,  tags: [Organization], x-permission: branch.view,   x-idempotency: n-a,         x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createBranch,  tags: [Organization], x-permission: branch.create, x-idempotency: recommended, x-phase: 1, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /settings/effective:
+    get: {operationId: getEffectiveSettings, tags: [Organization], x-permission: organization.view, x-idempotency: n-a, x-phase: 1, x-added-by: F-106, description: "Resolves doc 01's six-level configuration precedence chain. Without it the precedence rules are untestable.", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+  /accounting-policies:
+    get:  {operationId: listAccountingPolicies,  tags: [Organization], x-permission: accounting_policy.view,   x-idempotency: n-a,         x-phase: 1, x-added-by: F-106, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createAccountingPolicyVersion, tags: [Organization], x-permission: accounting_policy.configure, x-idempotency: recommended, x-phase: 1, x-added-by: F-106, description: "Creates a new version; never edits in place (doc 01 rule 7).", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /number-sequences:
+    get:  {operationId: listNumberSequences,  tags: [Organization], x-permission: number_sequence.view,      x-idempotency: n-a,         x-phase: 1, x-added-by: F-106, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createNumberSequence, tags: [Organization], x-permission: number_sequence.configure, x-idempotency: recommended, x-phase: 1, x-added-by: F-106, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+
+  # ---------- IAM (phase 1) ----------
+  /users:        {get:  {operationId: listUsers,   tags: [IAM], x-permission: user.view,   x-idempotency: n-a,         x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /users/invite: {post: {operationId: inviteUser,  tags: [IAM], x-permission: user.invite, x-idempotency: recommended, x-phase: 1, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /users/{id}/suspend:    {post: {operationId: suspendUser,    tags: [IAM], x-permission: user.suspend, x-idempotency: recommended, x-phase: 1, description: "Revokes live sessions (ADR-0005).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /users/{id}/reactivate: {post: {operationId: reactivateUser, tags: [IAM], x-permission: user.suspend, x-idempotency: recommended, x-phase: 1, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /roles:
+    get:  {operationId: listRoles,  tags: [IAM], x-permission: role.view,   x-idempotency: n-a,         x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createRole, tags: [IAM], x-permission: role.manage, x-idempotency: recommended, x-phase: 1, x-high-risk: true, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /roles/{id}: {patch: {operationId: updateRole, tags: [IAM], x-permission: role.manage, x-idempotency: n-a, x-phase: 1, x-high-risk: true, parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IfMatch'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /permissions: {get: {operationId: listPermissions, tags: [IAM], x-permission: role.view, x-idempotency: n-a, x-phase: 1, description: "Serves the generated registry (ADR-0005).", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /memberships:
+    get:  {operationId: listMemberships,  tags: [IAM], x-permission: user.view,   x-idempotency: n-a,         x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createMembership, tags: [IAM], x-permission: role.manage, x-idempotency: recommended, x-phase: 1, x-high-risk: true, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+
+  # ---------- Finance setup (phase 1) ----------
+  /fiscal-years:
+    get:  {operationId: listFiscalYears,  tags: [FinanceSetup], x-permission: fiscal_year.view,   x-idempotency: n-a,         x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createFiscalYear, tags: [FinanceSetup], x-permission: fiscal_year.create, x-idempotency: recommended, x-phase: 1, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /accounting-periods: {get: {operationId: listAccountingPeriods, tags: [FinanceSetup], x-permission: accounting_period.view, x-idempotency: n-a, x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /accounting-periods/{id}/soft-close: {post: {operationId: softClosePeriod, tags: [FinanceSetup], x-permission: accounting_period.soft_close, x-idempotency: required, x-phase: 1, x-supersedes: "PATCH /periods/{id}/status", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /accounting-periods/{id}/hard-close: {post: {operationId: hardClosePeriod, tags: [FinanceSetup], x-permission: accounting_period.hard_close, x-idempotency: required, x-phase: 1, x-supersedes: "PATCH /periods/{id}/status", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /accounting-periods/{id}/reopen:     {post: {operationId: reopenPeriod,    tags: [FinanceSetup], x-permission: accounting_period.reopen,     x-idempotency: required, x-phase: 1, x-high-risk: true, description: "Requires reason, audit, and optional approval (doc 02, Gate F).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /currencies:        {get: {operationId: listCurrencies,      tags: [FinanceSetup], x-permission: currency.view,       x-idempotency: n-a, x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /accounting-books:  {get: {operationId: listAccountingBooks, tags: [FinanceSetup], x-permission: accounting_book.view, x-idempotency: n-a, x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /exchange-rates:
+    get:  {operationId: listExchangeRates,  tags: [FinanceSetup], x-permission: exchange_rate.view,   x-idempotency: n-a,         x-phase: 1, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createExchangeRate, tags: [FinanceSetup], x-permission: exchange_rate.manage, x-idempotency: required,    x-phase: 1, description: "Never updates a historical rate in place; inserts an effective-dated row (doc 11).", x-additional-permissions: [{code: exchange_rate.override, description: "Supply a manual rate that overrides the provider rate. doc 11 requires a permission and an audit reason; exchange_rates.override_reason is NOT NULL when is_manual_override."}], responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+
+  # ---------- Ledger (phase 2) ----------
+  /accounts:
+    get:  {operationId: listAccounts,  tags: [Ledger], x-permission: account.view,   x-idempotency: n-a,         x-phase: 2, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createAccount, tags: [Ledger], x-permission: account.create, x-idempotency: recommended, x-phase: 2, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /accounts/{id}: {patch: {operationId: updateAccount, tags: [Ledger], x-permission: account.edit, x-idempotency: n-a, x-phase: 2, parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IfMatch'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /account-groups:
+    get:  {operationId: listAccountGroups,  tags: [Ledger], x-permission: account.view,   x-idempotency: n-a,         x-phase: 2, x-added-by: F-607, description: "doc 03 lists AccountGroup among its data objects and accounts.group_id references it, but no route created or listed one, so the reporting hierarchy the Balance Sheet groups by was unreachable.", responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createAccountGroup, tags: [Ledger], x-permission: account.create, x-idempotency: recommended, x-phase: 2, x-added-by: F-607, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /accounts/{id}/dimension-rules:
+    get: {operationId: getAccountDimensionRules, tags: [Ledger], x-permission: account.view, x-idempotency: n-a, x-phase: 2, x-added-by: F-609, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+    put: {operationId: setAccountDimensionRules, tags: [Ledger], x-permission: account.edit, x-idempotency: n-a, x-phase: 2, x-added-by: F-609, description: "Step 9 of doc 03's posting algorithm is \"validate dimension rules\" and account_dimension_rules models REQUIRED/OPTIONAL/PROHIBITED/DEFAULTED, but nothing could configure a rule, so the validation step could never fire. PUT rather than POST: the rule set for an account is replaced whole, so a removed rule is actually removed.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+  /journal-definitions:
+    get:  {operationId: listJournalDefinitions,  tags: [Ledger], x-permission: journal_definition.view,   x-idempotency: n-a,         x-phase: 2, x-added-by: F-608, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createJournalDefinition, tags: [Ledger], x-permission: journal_definition.manage, x-idempotency: recommended, x-phase: 2, x-added-by: F-608, description: "The journal a posting lands in - General, Sales, Purchase, Bank, Cash, Inventory, Asset, Tax, Payroll, Consolidation, Opening (doc 03). journal_entries.journal_id is NOT NULL, so with no route to create one, createJournalDraft could never be called successfully. Named /journal-definitions because /journals already denotes journal ENTRIES in this contract.", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /posting-rules:
+    get:  {operationId: listPostingRuleVersions,  tags: [Ledger], x-permission: posting_rule.view,   x-idempotency: n-a,         x-phase: 2, x-added-by: F-610, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createPostingRuleVersion, tags: [Ledger], x-permission: posting_rule.manage, x-idempotency: recommended, x-phase: 2, x-high-risk: true, x-added-by: F-610, description: "doc 01 rule 7 makes versioned, effective-dated posting rules non-negotiable and doc 21 lists them as Phase 2 build work, but the catalog had no route - so posting_rule_versions could only be populated by hand and simulatePosting had nothing to resolve. High-risk: a posting rule decides the accounts every future automatic journal touches.", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /dimensions:
+    get:  {operationId: listDimensions,  tags: [Ledger], x-permission: dimension.view,   x-idempotency: n-a,         x-phase: 2, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createDimension, tags: [Ledger], x-permission: dimension.create, x-idempotency: recommended, x-phase: 2, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /dimension-values:
+    get:  {operationId: listDimensionValues,  tags: [Ledger], x-permission: dimension.view,   x-idempotency: n-a,         x-phase: 2, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createDimensionValue, tags: [Ledger], x-permission: dimension.create, x-idempotency: recommended, x-phase: 2, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /journals:
+    get:  {operationId: listJournalEntries,  tags: [Ledger], x-permission: journal.view,   x-idempotency: n-a,         x-phase: 2, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createJournalDraft,  tags: [Ledger], x-permission: journal.create, x-idempotency: recommended, x-phase: 2, description: "Creates a DRAFT. The public API never inserts directly into the posted ledger (doc 15).", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /journals/{id}:
+    get:    {operationId: getJournalEntry,     tags: [Ledger], x-permission: journal.view, x-idempotency: n-a, x-phase: 2, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+    patch:  {operationId: updateJournalDraft,  tags: [Ledger], x-permission: journal.edit, x-idempotency: n-a, x-phase: 2, x-added-by: F-611, description: "doc 03: \"Draft can be edited.\" Only create/submit/approve/post/reverse existed, so a draft with a wrong account could be neither corrected nor discarded. DRAFT and REJECTED only - the immutability trigger refuses anything posted, and this route refuses before reaching it so the caller gets an explanation rather than a constraint name.", parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IfMatch'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+    delete: {operationId: discardJournalDraft, tags: [Ledger], x-permission: journal.edit, x-idempotency: n-a, x-phase: 2, x-added-by: F-611, description: "Discards an unposted draft. Posted history is never deleted (doc 01 rule 4); this reaches drafts only.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'204': {$ref: '#/components/responses/NoContent'}, default: {$ref: '#/components/responses/Error'}}}
+  /journals/{id}/submit:   {post: {operationId: submitJournal,   tags: [Ledger], x-permission: journal.submit,  x-idempotency: required, x-phase: 2, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /journals/{id}/approve:  {post: {operationId: approveJournal,  tags: [Ledger], x-permission: journal.approve, x-idempotency: required, x-phase: 2, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /journals/{id}/post:     {post: {operationId: postJournal,     tags: [Ledger], x-permission: journal.post,    x-idempotency: required, x-phase: 2, x-high-risk: true, description: "Posting to a control account requires journal.post_control (doc 02 high-risk).", x-additional-permissions: [{code: journal.post_control, high_risk: true, description: "Post a manual journal to a control account. One of doc 02's seven high-risk permissions."}, {code: journal.post_to_adjustment_period, description: "Name an adjustment period explicitly instead of the period resolve_accounting_period() derives from posting_date (F-403)."}], parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /journals/{id}/reverse:  {post: {operationId: reverseJournal,  tags: [Ledger], x-permission: journal.reverse, x-idempotency: required, x-phase: 2, description: "The only correction path for posted history (doc 01 rule 4).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /journals/{id}/schedule-reversal: {post: {operationId: scheduleJournalReversal, tags: [Ledger], x-permission: journal.reverse, x-idempotency: required, x-phase: 2, x-added-by: F-612, description: "doc 03: \"Scheduled reversal queues a future draft/post request and still obeys period status at execution.\" The schedule cannot be a column on journal_entries - the immutability trigger permits no UPDATE on a POSTED entry except POSTED -> REVERSED - so it is a separate aggregate with its own PENDING/EXECUTED/CANCELLED lifecycle.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /scheduled-reversals:            {get:  {operationId: listScheduledReversals,  tags: [Ledger], x-permission: journal.view,    x-idempotency: n-a,      x-phase: 2, x-added-by: F-612, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /scheduled-reversals/{id}/cancel: {post: {operationId: cancelScheduledReversal, tags: [Ledger], x-permission: journal.reverse, x-idempotency: required, x-phase: 2, x-added-by: F-612, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /accounting-events/simulate: {post: {operationId: simulatePosting, tags: [Ledger], x-permission: journal.view, x-idempotency: n-a, x-phase: 2, description: "Resolves posting rules and returns the journal that would be created. Writes nothing.", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /ledger/accounts/{id}/activity: {get: {operationId: getAccountActivity, tags: [Ledger], x-permission: ledger.view, x-idempotency: n-a, x-phase: 2, parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/PeriodFrom'}, {$ref: '#/components/parameters/PeriodTo'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /ledger/projections/rebuild: {post: {operationId: rebuildLedgerProjections, tags: [Ledger], x-permission: ledger.rebuild, x-idempotency: required, x-phase: 2, x-high-risk: true, x-added-by: F-614, description: "Destroys and rebuilds ledger_account_balances from posted journal lines. doc 21's Phase 2 exit criterion states the rebuild must produce identical balances and blueprint note 7 calls the table a projection that is never a source of truth - but nothing rebuilt it, so the criterion had no subject. Returns the before/after comparison, which is what makes it a proof rather than an assertion.", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /opening-balances:
+    get:  {operationId: listOpeningBalanceSets,  tags: [Ledger], x-permission: opening_balance.view,   x-idempotency: n-a,         x-phase: 2, x-added-by: F-613, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createOpeningBalanceSet, tags: [Ledger], x-permission: opening_balance.manage, x-idempotency: recommended, x-phase: 2, x-high-risk: true, x-added-by: F-613, description: "doc 21 Phase 2 requires \"Opening Trial Balance imports and validates Assets = Liabilities + Equity\" and doc 03 lists opening balances as kernel work, but opening_balance_sets sat in the Phase 9 migration file with no route. Creates the set and its draft journal together; validation is reported, not merely stored.", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /opening-balances/{id}/post: {post: {operationId: postOpeningBalanceSet, tags: [Ledger], x-permission: opening_balance.manage, x-idempotency: required, x-phase: 2, x-high-risk: true, x-added-by: F-613, description: "Posts the set's journal through the ordinary posting service, so opening balances obey every rule a normal posting obeys.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /recurring-journals:
+    get:  {operationId: listRecurringJournals,  tags: [Ledger], x-permission: journal.view,   x-idempotency: n-a,         x-phase: 2, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createRecurringJournal, tags: [Ledger], x-permission: journal.create, x-idempotency: recommended, x-phase: 2, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+
+  # ---------- AR (phase 3) ----------
+  /customers:
+    get:  {operationId: listCustomers,  tags: [AR], x-permission: customer.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createCustomer, tags: [AR], x-permission: customer.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /customers/{id}:
+    get:   {operationId: getCustomer,    tags: [AR], x-permission: customer.view, x-idempotency: n-a, x-phase: 3, x-added-by: F-708, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+    patch: {operationId: updateCustomer, tags: [AR], x-permission: customer.edit, x-idempotency: n-a, x-phase: 3, x-added-by: F-708, description: "doc 04's customer configuration - payment terms, credit limit, AR/revenue defaults, collection owner, statement delivery - is stated as configuration, and the catalog had create and list only. A credit limit that can be set once and never changed is not a credit limit.", parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IfMatch'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+  /customers/{id}/statement: {get: {operationId: getCustomerStatement, tags: [AR], x-permission: customer.view, x-idempotency: n-a, x-phase: 3, x-added-by: F-106, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /quotes:
+    get:  {operationId: listQuotes,  tags: [AR], x-permission: quote.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createQuote, tags: [AR], x-permission: quote.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /quotes/{id}/accept: {post: {operationId: acceptQuote, tags: [AR], x-permission: quote.edit, x-idempotency: required, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /quotes/{id}/convert: {post: {operationId: convertQuote, tags: [AR], x-permission: quote.edit, x-idempotency: required, x-phase: 3, x-added-by: F-709, description: "doc 04: \"Convert to sales order or invoice while preserving source link.\" quotes.converted_to_type and converted_to_id exist for exactly this and nothing could write them, so an ACCEPTED quote was a dead end and its lines had to be retyped into the document it became.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /sales-orders:
+    get:  {operationId: listSalesOrders,  tags: [AR], x-permission: sales_order.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createSalesOrder, tags: [AR], x-permission: sales_order.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /sales-orders/{id}/confirm: {post: {operationId: confirmSalesOrder, tags: [AR], x-permission: sales_order.confirm, x-idempotency: required, x-phase: 3, x-added-by: F-710, description: "doc 04's lifecycle reaches CONFIRMED, sales_order.confirmed is a canonical event, and no route produced either - so an order could be created and never leave DRAFT. Confirmation is what makes an order invoiceable, so it is separate from approval.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /invoices:
+    get:  {operationId: listInvoices,  tags: [AR], x-permission: invoice.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/InvoiceList'}, default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createInvoice, tags: [AR], x-permission: invoice.create, x-idempotency: recommended, x-phase: 3, requestBody: {$ref: '#/components/requestBodies/InvoiceCreate'}, x-additional-permissions: [{code: tax.override, high_risk: true, description: "Replace the determined tax code on a line, writing a tax_overrides row with a reason. One of doc 02's seven high-risk permissions."}], responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /invoices/{id}:
+    get:   {operationId: getInvoice,    tags: [AR], x-permission: invoice.view,       x-idempotency: n-a, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+    patch: {operationId: updateInvoice, tags: [AR], x-permission: invoice.edit_draft, x-idempotency: n-a, x-phase: 3, description: "DRAFT only. A posted invoice is corrected by credit note, never edited (doc 01 rule 4).", parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IfMatch'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+  /invoices/{id}/approve:        {post: {operationId: approveInvoice, tags: [AR], x-permission: invoice.approve, x-idempotency: required, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /invoices/{id}/post:           {post: {operationId: postInvoice,    tags: [AR], x-permission: invoice.post,    x-idempotency: required, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /invoices/{id}/send:           {post: {operationId: sendInvoice,    tags: [AR], x-permission: invoice.send,    x-idempotency: required, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /invoices/{id}/void-or-credit: {post: {operationId: voidOrCreditInvoice, tags: [AR], x-permission: invoice.void, x-idempotency: required, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /credit-notes:
+    get:  {operationId: listCreditNotes,  tags: [AR], x-permission: credit_note.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createCreditNote, tags: [AR], x-permission: credit_note.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /credit-notes/{id}/post:  {post: {operationId: postCreditNote,  tags: [AR], x-permission: credit_note.post,  x-idempotency: required, x-phase: 3, x-added-by: F-711, description: "credit_notes.status starts DRAFT and credit_note.posted is a canonical event, but only create and list existed, so a credit note could never reach the ledger.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /credit-notes/{id}/apply: {post: {operationId: applyCreditNote, tags: [AR], x-permission: credit_note.apply, x-idempotency: required, x-phase: 3, x-added-by: F-711, description: "Applies available credit to one or more open invoices. doc 04: a credit note \"can reduce open invoice, remain as customer credit or be refunded\" - credit_notes.amount_applied existed with nothing able to move it, so only the second of the three was reachable. Same lock order as receipt allocation (ADR-0004).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /customer-receipts:
+    get:  {operationId: listCustomerReceipts,  tags: [AR], x-permission: customer_receipt.view,   x-idempotency: n-a,      x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createCustomerReceipt, tags: [AR], x-permission: customer_receipt.create, x-idempotency: required, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /customer-receipts/{id}/allocate: {post: {operationId: allocateCustomerReceipt, tags: [AR], x-permission: customer_receipt.allocate, x-idempotency: required, x-phase: 3, description: "Lock order: receipt, then targets by ascending id (ADR-0004).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /customer-refunds: {post: {operationId: createCustomerRefund, tags: [AR], x-permission: customer_refund.create, x-idempotency: required, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /ar/write-offs:    {post: {operationId: createArWriteOff,     tags: [AR], x-permission: ar.write_off,           x-idempotency: required, x-phase: 3, x-high-risk: true, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /recurring-invoices:
+    get:  {operationId: listRecurringInvoices,  tags: [AR], x-permission: invoice.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createRecurringInvoice, tags: [AR], x-permission: invoice.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /dunning-cases: {get: {operationId: listDunningCases, tags: [AR], x-permission: dunning.view, x-idempotency: n-a, x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- AP (phase 3) ----------
+  /vendors:
+    get:  {operationId: listVendors,  tags: [AP], x-permission: vendor.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createVendor, tags: [AP], x-permission: vendor.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /vendors/{id}:
+    get:   {operationId: getVendor,    tags: [AP], x-permission: vendor.view, x-idempotency: n-a, x-phase: 3, x-added-by: F-708, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+    patch: {operationId: updateVendor, tags: [AP], x-permission: vendor.edit, x-idempotency: n-a, x-phase: 3, x-added-by: F-708, description: "Everything about a vendor except its bank details, which have their own high-risk route. Splitting them is the point: an ordinary edit must not be a way to reach the field that decides where money goes.", parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IfMatch'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+  /vendors/{id}/bank-details: {patch: {operationId: updateVendorBankDetails, tags: [AP], x-permission: vendor.change_bank_details, x-idempotency: n-a, x-phase: 3, x-high-risk: true, description: "Records before/after, actor, reason, verification; may require independent approval (doc 05, Gate F).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /purchase-requisitions:
+    get:  {operationId: listPurchaseRequisitions,  tags: [AP], x-permission: purchase_requisition.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createPurchaseRequisition, tags: [AP], x-permission: purchase_requisition.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /purchase-requisitions/{id}/approve: {post: {operationId: approvePurchaseRequisition, tags: [AP], x-permission: purchase_requisition.approve, x-idempotency: required, x-phase: 3, x-added-by: F-712, description: "doc 05 routes requisition approval by amount, dimension or category, purchase_requisition.approved is a canonical event, and no route produced it - so nothing could become a purchase order. Requisitions are non-posting; this gates spending authority, not the ledger.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /purchase-orders:
+    get:  {operationId: listPurchaseOrders,  tags: [AP], x-permission: purchase_order.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createPurchaseOrder, tags: [AP], x-permission: purchase_order.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /purchase-orders/{id}/approve: {post: {operationId: approvePurchaseOrder, tags: [AP], x-permission: purchase_order.approve, x-idempotency: required, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /goods-receipts:
+    get:  {operationId: listGoodsReceipts,  tags: [AP], x-permission: goods_receipt.view,   x-idempotency: n-a,      x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createGoodsReceipt, tags: [AP], x-permission: goods_receipt.create, x-idempotency: required, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /goods-receipts/{id}/post: {post: {operationId: postGoodsReceipt, tags: [AP], x-permission: goods_receipt.post, x-idempotency: required, x-phase: 3, x-added-by: F-713, description: "Receiving goods before the bill arrives is an accounting event: Dr destination, Cr Goods Received Not Invoiced. accounting_policies.grni_account_id exists for it and goods_receipt.posted is a canonical event, but no route posted one, so the receipt/bill timing difference doc 05 separates could not be accounted for.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /vendor-bills:
+    get:  {operationId: listVendorBills,  tags: [AP], x-permission: vendor_bill.view,   x-idempotency: n-a,         x-phase: 3, x-supersedes: "/bills", responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createVendorBill, tags: [AP], x-permission: vendor_bill.create, x-idempotency: recommended, x-phase: 3, x-supersedes: "/bills", description: "Duplicate detection returns 409 DUPLICATE_SUSPECTED; override needs vendor_bill.override_duplicate and a reason (F-020).", x-additional-permissions: [{code: vendor_bill.override_duplicate, description: "Accept a bill that duplicate detection flagged. vendor_bills.duplicate_override_reason is NOT NULL whenever duplicate_override_by is set (F-020)."}, {code: tax.override, high_risk: true, description: "Replace the determined tax code on a line, writing a tax_overrides row with a reason."}], responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /vendor-bills/{id}/match:   {post: {operationId: matchVendorBill,   tags: [AP], x-permission: vendor_bill.match,   x-idempotency: required, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /vendor-bills/{id}/approve: {post: {operationId: approveVendorBill, tags: [AP], x-permission: vendor_bill.approve, x-idempotency: required, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /vendor-bills/{id}/post:    {post: {operationId: postVendorBill,    tags: [AP], x-permission: vendor_bill.post,    x-idempotency: required, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /vendor-credits:
+    get:  {operationId: listVendorCredits,  tags: [AP], x-permission: vendor_credit.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createVendorCredit, tags: [AP], x-permission: vendor_credit.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /vendor-credits/{id}/post:  {post: {operationId: postVendorCredit,  tags: [AP], x-permission: vendor_credit.post,  x-idempotency: required, x-phase: 3, x-added-by: F-711, description: "The AP half of F-711. vendor_credit.posted is canonical and nothing posted one.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /vendor-credits/{id}/apply: {post: {operationId: applyVendorCredit, tags: [AP], x-permission: vendor_credit.apply, x-idempotency: required, x-phase: 3, x-added-by: F-711, description: "doc 05: \"Apply to bill/payment run or leave open.\" Applying to a payment run happens through the run; applying directly to a bill had no route at all, so vendor_credits.amount_applied could never move.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /vendor-payments:
+    get:  {operationId: listVendorPayments,  tags: [AP], x-permission: vendor_payment.view, x-idempotency: n-a,      x-phase: 3, x-added-by: F-106, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createVendorPayment, tags: [AP], x-permission: vendor_payment.pay,  x-idempotency: required, x-phase: 3, x-added-by: F-106, x-high-risk: true, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /vendor-payments/{id}/confirm: {post: {operationId: confirmVendorPayment, tags: [AP], x-permission: vendor_payment.confirm, x-idempotency: required, x-phase: 3, x-added-by: F-715, description: "Records the bank's answer. doc 05 step 7 tracks SENT/PENDING/CONFIRMED/FAILED and payment_status carries all four, but nothing could move a payment out of SENT - so a payment sent to the bank stayed sent forever and vendor_payment.completed and vendor_payment.failed had no producer. Body carries the outcome and the bank reference; a failure records the reason and releases the allocations.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /vendor-payments/{id}/allocate: {post: {operationId: allocateVendorPayment, tags: [AP], x-permission: vendor_payment.allocate, x-idempotency: required, x-phase: 3, description: "Lock order: payment, then targets by ascending id (ADR-0004).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /payment-runs:
+    get:  {operationId: listPaymentRuns,  tags: [AP], x-permission: payment_run.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createPaymentRun, tags: [AP], x-permission: payment_run.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /payment-runs/{id}/approve: {post: {operationId: approvePaymentRun, tags: [AP], x-permission: payment_run.approve, x-idempotency: required, x-phase: 3, x-high-risk: true, description: "Dual control above threshold (doc 14 SoD).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /payment-runs/{id}/execute: {post: {operationId: executePaymentRun, tags: [AP], x-permission: payment_run.execute, x-idempotency: required, x-phase: 3, x-high-risk: true, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /expense-claims:
+    get:  {operationId: listExpenseClaims,  tags: [AP], x-permission: expense_claim.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createExpenseClaim, tags: [AP], x-permission: expense_claim.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /expense-claims/{id}/submit:  {post: {operationId: submitExpenseClaim,  tags: [AP], x-permission: expense_claim.submit,  x-idempotency: required, x-phase: 3, x-added-by: F-714, description: "Runs doc 05's policy engine - limits, missing receipt, duplicates - and records the flags on the claim. Self-service on the claimant's own claim; submitting someone else's needs the permission.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /expense-claims/{id}/approve: {post: {operationId: approveExpenseClaim, tags: [AP], x-permission: expense_claim.approve, x-idempotency: required, x-phase: 3, x-added-by: F-714, description: "The claimant may never approve their own claim (doc 14 SoD).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /expense-claims/{id}/post:    {post: {operationId: postExpenseClaim,    tags: [AP], x-permission: expense_claim.post,    x-idempotency: required, x-phase: 3, x-added-by: F-714, description: "expense_claim_status models seven states and expense_claim.submitted, .approved and .posted are all canonical events; the catalog had create and list, so a claim could be typed and never moved. Posts Dr expense + recoverable tax, Cr employee payable.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /payment-holds:
+    get:  {operationId: listPaymentHolds, tags: [AP], x-permission: payment_hold.view,   x-idempotency: n-a,      x-phase: 3, x-added-by: F-716, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: placePaymentHold, tags: [AP], x-permission: payment_hold.manage, x-idempotency: required, x-phase: 3, x-added-by: F-716, description: "doc 05: a payment run \"excludes unapproved, held or blocked vendors/bills\". payment_holds existed with no route, so the exclusion had nothing to read and the word \"held\" described a state nobody could enter.", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /payment-holds/{id}/release: {post: {operationId: releasePaymentHold, tags: [AP], x-permission: payment_hold.manage, x-idempotency: required, x-phase: 3, x-added-by: F-716, description: "Released rather than deleted: who held payment to a vendor, and who let it go, is exactly what an investigation asks.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- Tax and localization (phase 3) ----------
+  /tax-codes:
+    get:  {operationId: listTaxCodes,  tags: [Tax], x-permission: tax_code.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createTaxCode, tags: [Tax], x-permission: tax_code.manage, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /tax-rates:
+    get:  {operationId: listTaxRates,  tags: [Tax], x-permission: tax_code.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createTaxRate, tags: [Tax], x-permission: tax_code.manage, x-idempotency: recommended, x-phase: 3, description: "Effective-dated; overlapping validity for the same component is rejected (F-025).", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /tax/calculate:    {post: {operationId: calculateTax,     tags: [Tax], x-permission: tax.calculate, x-idempotency: n-a, x-phase: 3, description: "Returns a deterministic snapshot including the rule version applied.", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /tax-periods:
+    get:  {operationId: listTaxPeriods,  tags: [Tax], x-permission: tax_period.view,   x-idempotency: n-a,         x-phase: 3, x-added-by: F-717, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createTaxPeriod, tags: [Tax], x-permission: tax_period.manage, x-idempotency: recommended, x-phase: 3, x-added-by: F-717, description: "doc 07 gives a tax period its own OPEN -> PREPARING -> READY -> FILED -> AMENDED lifecycle, separate from the accounting period because jurisdictions file monthly, quarterly or annually regardless of the fiscal calendar. tax_periods and tax_period.opened existed; nothing created one, so a tax return had no period to pull transactions for.", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /tax-periods/{id}/close: {post: {operationId: closeTaxPeriod, tags: [Tax], x-permission: tax_period.manage, x-idempotency: required, x-phase: 3, x-added-by: F-717, description: "Refuses while any transaction in range is unposted, so a closed tax period cannot acquire new facts afterwards.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /tax-transactions: {get:  {operationId: listTaxTransactions, tags: [Tax], x-permission: tax.view, x-idempotency: n-a, x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /tax-returns:
+    get:  {operationId: listTaxReturns,  tags: [Tax], x-permission: tax_return.view,   x-idempotency: n-a,         x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createTaxReturn, tags: [Tax], x-permission: tax_return.create, x-idempotency: recommended, x-phase: 3, x-added-by: F-107, description: "F-107 - the lifecycle had no entry point in the original catalog.", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /tax-returns/{id}/prepare:    {post: {operationId: prepareTaxReturn,  tags: [Tax], x-permission: tax_return.prepare, x-idempotency: required, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /tax-returns/{id}/approve:    {post: {operationId: approveTaxReturn,  tags: [Tax], x-permission: tax_return.approve, x-idempotency: required, x-phase: 3, description: "Preparer and approver must differ (doc 14 SoD).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /tax-returns/{id}/mark-filed: {post: {operationId: markTaxReturnFiled, tags: [Tax], x-permission: tax_return.file,  x-idempotency: required, x-phase: 3, x-supersedes: "/tax-returns/{id}/finalize", x-high-risk: true, description: "Creates the immutable filed snapshot with filing reference and evidence.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /localizations: {get: {operationId: listLocalizations, tags: [Localization], x-permission: localization.view, x-idempotency: n-a, x-phase: 3, x-added-by: F-106, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /legal-entities/{id}/localization/install: {post: {operationId: installLocalization, tags: [Localization], x-permission: localization.install, x-idempotency: required, x-phase: 3, x-added-by: F-106, x-high-risk: true, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /einvoice/{id}/submit: {post: {operationId: submitEInvoice, tags: [Localization], x-permission: einvoice.submit, x-idempotency: required, x-phase: 3, x-added-by: F-106, description: "Retry must never cause a duplicate government submission (doc 07 acceptance).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- Files (phase 3) ----------
+  /files/upload-url:   {post:   {operationId: createUploadUrl, tags: [Files], x-permission: file.create, x-idempotency: recommended, x-phase: 3, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /files/{id}/complete: {post:   {operationId: completeUpload,  tags: [Files], x-permission: file.create, x-idempotency: required,    x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /files/{id}/download-url: {get: {operationId: createDownloadUrl, tags: [Files], x-permission: file.view, x-idempotency: n-a, x-phase: 3, x-added-by: F-718, description: "doc 21 requires attachment upload AND download; GET /files/{id} returns metadata only, so the bytes were unreachable. Returns a short-lived pre-signed URL rather than streaming, for the same reason upload is pre-signed: the API never becomes the transfer path for large files. Refuses a file whose scan has not returned CLEAN.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /files/{id}:
+    get:    {operationId: getFile,    tags: [Files], x-permission: file.view,   x-idempotency: n-a, x-phase: 3, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}
+    delete: {operationId: deleteFile, tags: [Files], x-permission: file.delete, x-idempotency: n-a, x-phase: 3, description: "Draft attachments only; a file linked to posted history cannot be deleted (doc 01).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'204': {$ref: '#/components/responses/NoContent'}, default: {$ref: '#/components/responses/Error'}}}
+
+  # ---------- Banking (phase 4) ----------
+  /bank-accounts:
+    get:  {operationId: listBankAccounts,  tags: [Banking], x-permission: bank_account.view,   x-idempotency: n-a,         x-phase: 4, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createBankAccount, tags: [Banking], x-permission: bank_account.create, x-idempotency: recommended, x-phase: 4, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /bank-accounts/{id}/imports: {post: {operationId: importBankTransactions, tags: [Banking], x-permission: bank.import, x-idempotency: required, x-phase: 4, x-supersedes: "/bank-imports", description: "Dedupes on provider_transaction_id; fingerprint raises a review item, never a silent reject (F-028).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'202': {$ref: '#/components/responses/Accepted'}, default: {$ref: '#/components/responses/Error'}}}}
+  /bank-accounts/{id}/sync:    {post: {operationId: syncBankAccount, tags: [Banking], x-permission: bank.sync, x-idempotency: required, x-phase: 4, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'202': {$ref: '#/components/responses/Accepted'}, default: {$ref: '#/components/responses/Error'}}}}
+  /bank-connections:
+    get:  {operationId: listBankConnections,  tags: [Banking], x-permission: bank_connection.view,   x-idempotency: n-a,         x-phase: 4, x-added-by: F-106, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createBankConnection, tags: [Banking], x-permission: bank_connection.manage, x-idempotency: recommended, x-phase: 4, x-added-by: F-106, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /bank-transactions:                {get: {operationId: listBankTransactions,  tags: [Banking], x-permission: bank.view, x-idempotency: n-a, x-phase: 4, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /bank-transactions/{id}/matches:   {get: {operationId: getMatchCandidates,    tags: [Banking], x-permission: bank.view, x-idempotency: n-a, x-phase: 4, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /bank-transactions/{id}/match:      {post: {operationId: matchBankTransaction,      tags: [Banking], x-permission: bank.reconcile, x-idempotency: required, x-phase: 4, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /bank-transactions/{id}/categorize: {post: {operationId: categorizeBankTransaction, tags: [Banking], x-permission: bank.categorize, x-idempotency: required, x-phase: 4, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /bank-transactions/{id}/split:      {post: {operationId: splitBankTransaction,      tags: [Banking], x-permission: bank.categorize, x-idempotency: required, x-phase: 4, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /bank-rules:
+    get:  {operationId: listBankRules,  tags: [Banking], x-permission: bank_rule.view,   x-idempotency: n-a,         x-phase: 4, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createBankRule, tags: [Banking], x-permission: bank_rule.manage, x-idempotency: recommended, x-phase: 4, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /bank-reconciliations:
+    get:  {operationId: listBankReconciliations,  tags: [Banking], x-permission: bank.reconcile, x-idempotency: n-a,         x-phase: 4, x-supersedes: "/reconciliations", responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createBankReconciliation, tags: [Banking], x-permission: bank.reconcile, x-idempotency: recommended, x-phase: 4, x-supersedes: "/reconciliations", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /bank-reconciliations/{id}/complete: {post: {operationId: completeBankReconciliation, tags: [Banking], x-permission: bank.reconcile, x-idempotency: required, x-phase: 4, x-supersedes: "/reconciliations/{id}/finalize", description: "Requires difference within tolerance; locks the session (F-030).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /bank-reconciliations/{id}/reopen:   {post: {operationId: reopenBankReconciliation,   tags: [Banking], x-permission: bank.reconcile_reopen, x-idempotency: required, x-phase: 4, x-high-risk: true, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /bank-transfers: {post: {operationId: createBankTransfer, tags: [Banking], x-permission: bank_transfer.create, x-idempotency: required, x-phase: 4, x-supersedes: "/transfers", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /cash-position:  {get:  {operationId: getCashPosition,    tags: [Banking], x-permission: bank.view, x-idempotency: n-a, x-phase: 4, x-added-by: F-106, description: "Distinguishes bank-source from book-source timestamps (doc 06).", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- Inventory (phase 5) ----------
+  /items:
+    get:  {operationId: listItems,  tags: [Inventory], x-permission: item.view,   x-idempotency: n-a,         x-phase: 5, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createItem, tags: [Inventory], x-permission: item.create, x-idempotency: recommended, x-phase: 5, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /warehouses:
+    get:  {operationId: listWarehouses,  tags: [Inventory], x-permission: warehouse.view,   x-idempotency: n-a,         x-phase: 5, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createWarehouse, tags: [Inventory], x-permission: warehouse.create, x-idempotency: recommended, x-phase: 5, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /inventory/receipts:    {post: {operationId: createInventoryReceipt,    tags: [Inventory], x-permission: inventory.receive, x-idempotency: required, x-phase: 5, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /inventory/issues:      {post: {operationId: createInventoryIssue,      tags: [Inventory], x-permission: inventory.issue,   x-idempotency: required, x-phase: 5, description: "Consumes cost layers under FOR UPDATE ordered by received_date (ADR-0004).", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /inventory/transfers:   {post: {operationId: createInventoryTransfer,   tags: [Inventory], x-permission: inventory.transfer, x-idempotency: required, x-phase: 5, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /inventory/adjustments: {post: {operationId: createInventoryAdjustment, tags: [Inventory], x-permission: inventory.adjust,  x-idempotency: required, x-phase: 5, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /inventory/counts:      {post: {operationId: createStockCount,          tags: [Inventory], x-permission: inventory.count,   x-idempotency: required, x-phase: 5, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /inventory/landed-costs: {post: {operationId: createLandedCost,          tags: [Inventory], x-permission: inventory.adjust,  x-idempotency: required, x-phase: 5, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /inventory/on-hand:     {get:  {operationId: getInventoryOnHand,   tags: [Inventory], x-permission: inventory.view, x-idempotency: n-a, x-phase: 5, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /inventory/valuation:   {get:  {operationId: getInventoryValuation, tags: [Inventory], x-permission: inventory.view, x-idempotency: n-a, x-phase: 5, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- Assets (phase 5) ----------
+  /assets:
+    get:  {operationId: listAssets,  tags: [Assets], x-permission: asset.view,   x-idempotency: n-a,         x-phase: 5, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createAsset, tags: [Assets], x-permission: asset.create, x-idempotency: recommended, x-phase: 5, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /assets/{id}/capitalize: {post: {operationId: capitalizeAsset, tags: [Assets], x-permission: asset.capitalize, x-idempotency: required, x-phase: 5, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /assets/{id}/transfer:   {post: {operationId: transferAsset,   tags: [Assets], x-permission: asset.transfer,   x-idempotency: required, x-phase: 5, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /assets/{id}/impair:     {post: {operationId: impairAsset,     tags: [Assets], x-permission: asset.impair,     x-idempotency: required, x-phase: 5, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /assets/{id}/reverse-impairment: {post: {operationId: reverseAssetImpairment, tags: [Assets], x-permission: asset.impair, x-idempotency: required, x-phase: 5, x-added-by: ADR-0001, description: "IFRS/IAS 36 permits reversal for non-goodwill assets. Absent from the original catalog.", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /assets/{id}/revalue:    {post: {operationId: revalueAsset,    tags: [Assets], x-permission: asset.revalue,    x-idempotency: required, x-phase: 5, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /assets/{id}/dispose:    {post: {operationId: disposeAsset,    tags: [Assets], x-permission: asset.dispose,    x-idempotency: required, x-phase: 5, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /assets/depreciation-runs: {post: {operationId: createDepreciationRun, tags: [Assets], x-permission: asset.depreciate, x-idempotency: required, x-phase: 5, x-supersedes: "/depreciation-runs", description: "Idempotent per asset-book and period by unique constraint.", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- Projects and budgets (phase 5) ----------
+  /projects:
+    get:  {operationId: listProjects,  tags: [Projects], x-permission: project.view,   x-idempotency: n-a,         x-phase: 5, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createProject, tags: [Projects], x-permission: project.create, x-idempotency: recommended, x-phase: 5, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /projects/{id}/billing-proposals: {post: {operationId: createBillingProposal, tags: [Projects], x-permission: project.bill, x-idempotency: required, x-phase: 5, x-added-by: F-106, description: "Produces an AR invoice draft; the project module never posts revenue directly (doc 10).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /budgets:
+    get:  {operationId: listBudgets,  tags: [Projects], x-permission: budget.view,   x-idempotency: n-a,         x-phase: 5, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createBudget, tags: [Projects], x-permission: budget.create, x-idempotency: recommended, x-phase: 5, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /budgets/{id}/approve:  {post: {operationId: approveBudget, tags: [Projects], x-permission: budget.approve, x-idempotency: required, x-phase: 5, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /budgets/{id}/revise:   {post: {operationId: reviseBudget,  tags: [Projects], x-permission: budget.revise,  x-idempotency: required, x-phase: 5, description: "Creates a new version; never overwrites an approved budget (doc 10).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /budgets/{id}/variance: {get:  {operationId: getBudgetVariance, tags: [Projects], x-permission: budget.view, x-idempotency: n-a, x-phase: 5, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /budget-control/check:  {get:  {operationId: checkBudgetControl, tags: [Projects], x-permission: budget.view, x-idempotency: n-a, x-phase: 5, x-added-by: F-106, description: "The enforcement point for warn/block/override. Without it budget control is advisory only.", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /forecasts:
+    get:  {operationId: listForecasts,  tags: [Projects], x-permission: forecast.view,   x-idempotency: n-a,         x-phase: 5, x-added-by: F-106, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createForecast, tags: [Projects], x-permission: forecast.manage, x-idempotency: recommended, x-phase: 5, x-added-by: F-106, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+
+  # ---------- Reports (phase 6) ----------
+  /reports/trial-balance:      {get: {operationId: getTrialBalance,       tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 2, parameters: [{$ref: '#/components/parameters/BookId'}, {$ref: '#/components/parameters/PeriodFrom'}, {$ref: '#/components/parameters/PeriodTo'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /reports/general-ledger:     {get: {operationId: getGeneralLedger,      tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 2, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /reports/journal-register:   {get: {operationId: getJournalRegister,    tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 2, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /reports/profit-loss:        {get: {operationId: getProfitLoss,         tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 6, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /reports/balance-sheet:      {get: {operationId: getBalanceSheet,       tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 6, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /reports/cash-flow:          {get: {operationId: getCashFlow,           tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 6, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /reports/ar-aging:           {get: {operationId: getArAging,            tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 3, x-supersedes: "/ar/aging", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /reports/ap-aging:           {get: {operationId: getApAging,            tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /reports/tax:                {get: {operationId: getTaxReport,          tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 3, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /reports/inventory-valuation: {get: {operationId: getInventoryValuationReport, tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 5, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /reports/fixed-assets:       {get: {operationId: getFixedAssetReport,   tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 5, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /reports/budget-vs-actual:   {get: {operationId: getBudgetVsActual,     tags: [Reports], x-permission: report.view, x-idempotency: n-a, x-phase: 5, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /report-definitions:
+    get:  {operationId: listReportDefinitions,  tags: [Reports], x-permission: report.view,   x-idempotency: n-a,         x-phase: 6, x-added-by: F-106, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createReportDefinition, tags: [Reports], x-permission: report.manage, x-idempotency: recommended, x-phase: 6, x-added-by: F-106, description: "A change creates a new version; snapshots record the version used (doc 12).", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /report-runs:
+    get:  {operationId: listReportRuns,  tags: [Reports], x-permission: report.view, x-idempotency: n-a,         x-phase: 6, x-added-by: F-106, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createReportRun, tags: [Reports], x-permission: report.export, x-idempotency: recommended, x-phase: 6, x-added-by: F-106, x-high-risk: true, description: "Asynchronous export job. doc 02 names \"export all financial data\" among the seven high-risk permissions, so report.export is flagged high-risk in the registry.", responses: {'202': {$ref: '#/components/responses/Accepted'}, default: {$ref: '#/components/responses/Error'}}}
+
+  # ---------- Workflow (phase 6) ----------
+  /approval-workflows:
+    get:  {operationId: listApprovalWorkflows,  tags: [Workflow], x-permission: workflow.view,   x-idempotency: n-a,         x-phase: 6, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createApprovalWorkflow, tags: [Workflow], x-permission: workflow.manage, x-idempotency: recommended, x-phase: 6, x-supersedes: "/workflows", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /approval-workflows/{id}/publish: {post: {operationId: publishApprovalWorkflow, tags: [Workflow], x-permission: workflow.manage, x-idempotency: required, x-phase: 6, x-supersedes: "/workflows/{id}/publish", description: "Published versions are immutable; running instances keep their version (doc 14).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /approval-tasks:                    {get:  {operationId: listApprovalTasks,   tags: [Workflow], x-permission: approval.view,     x-idempotency: n-a,      x-phase: 6, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /approval-tasks/{id}/approve:       {post: {operationId: approveTask,         tags: [Workflow], x-permission: approval.approve,  x-idempotency: required, x-phase: 6, x-supersedes: "/approvals/{id}/approve", description: "SoD rules may forbid self-approval (doc 14, Gate F).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /approval-tasks/{id}/reject:        {post: {operationId: rejectTask,          tags: [Workflow], x-permission: approval.approve,  x-idempotency: required, x-phase: 6, x-supersedes: "/approvals/{id}/reject", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /approval-tasks/{id}/request-changes: {post: {operationId: requestTaskChanges, tags: [Workflow], x-permission: approval.approve, x-idempotency: required, x-phase: 6, x-added-by: F-106, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /approval-tasks/{id}/delegate:      {post: {operationId: delegateTask,        tags: [Workflow], x-permission: approval.delegate, x-idempotency: required, x-phase: 6, x-supersedes: "/approvals/{id}/delegate", description: "Delegation cannot violate SoD (doc 14).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /tasks:            {get:  {operationId: listTasks,    tags: [Workflow], x-permission: task.view,   x-idempotency: n-a,      x-phase: 6, x-added-by: F-106, description: "Unified inbox across 10 source types (doc 14).", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /tasks/{id}/complete: {post: {operationId: completeTask, tags: [Workflow], x-permission: task.complete, x-idempotency: required, x-phase: 6, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- Close and audit (phase 6) ----------
+  /close-runs:
+    get:  {operationId: listCloseRuns,  tags: [Close], x-permission: close.view,   x-idempotency: n-a,         x-phase: 6, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createCloseRun, tags: [Close], x-permission: close.manage, x-idempotency: recommended, x-phase: 6, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /close-runs/{id}/tasks:    {get:  {operationId: listCloseTasks,  tags: [Close], x-permission: close.view,   x-idempotency: n-a,      x-phase: 6, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /close-runs/{id}/finalize: {post: {operationId: finalizeCloseRun, tags: [Close], x-permission: close.finalize, x-idempotency: required, x-phase: 6, description: "Blocked while required tasks are incomplete unless an override workflow exists (doc 12).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /close-tasks/{id}/complete: {post: {operationId: completeCloseTask, tags: [Close], x-permission: close.manage, x-idempotency: required, x-phase: 6, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /close-checklists/generate: {post: {operationId: generateCloseChecklist, tags: [Close], x-permission: close.manage, x-idempotency: required, x-phase: 6, x-added-by: F-106, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /account-reconciliations:
+    get:  {operationId: listAccountReconciliations,  tags: [Close], x-permission: reconciliation.view,   x-idempotency: n-a,         x-phase: 6, x-added-by: F-106, description: "What Gate D tests: GL balance, subledger balance, reconciling items, difference.", responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createAccountReconciliation, tags: [Close], x-permission: reconciliation.manage, x-idempotency: recommended, x-phase: 6, x-added-by: F-106, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /account-reconciliations/{id}/certify: {post: {operationId: certifyAccountReconciliation, tags: [Close], x-permission: reconciliation.certify, x-idempotency: required, x-phase: 6, x-added-by: F-106, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /financial-statement-snapshots:
+    get:  {operationId: listFinancialSnapshots,  tags: [Close], x-permission: report.view,     x-idempotency: n-a,      x-phase: 6, x-added-by: F-106, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createFinancialSnapshot, tags: [Close], x-permission: report.snapshot, x-idempotency: required, x-phase: 6, x-added-by: F-106, description: "Immutable once created; future activity must not rewrite it (Gate E).", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /audit-requests:
+    get:  {operationId: listAuditRequests,  tags: [Audit], x-permission: audit.view,   x-idempotency: n-a,         x-phase: 6, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createAuditRequest, tags: [Audit], x-permission: audit.manage, x-idempotency: recommended, x-phase: 6, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /audit-events: {get: {operationId: listAuditEvents, tags: [Audit], x-permission: audit.view, x-idempotency: n-a, x-phase: 1, description: "Read-only. The audit log is immutable (F-043).", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- Consolidation (phase 7) ----------
+  /consolidation-groups:
+    get:  {operationId: listConsolidationGroups,  tags: [Consolidation], x-permission: consolidation.view,   x-idempotency: n-a,         x-phase: 7, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createConsolidationGroup, tags: [Consolidation], x-permission: consolidation.manage, x-idempotency: recommended, x-phase: 7, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /consolidation-runs:
+    get:  {operationId: listConsolidationRuns,  tags: [Consolidation], x-permission: consolidation.view, x-idempotency: n-a,      x-phase: 7, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createConsolidationRun, tags: [Consolidation], x-permission: consolidation.run,  x-idempotency: required, x-phase: 7, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /consolidation-runs/{id}/translate: {post: {operationId: translateConsolidation, tags: [Consolidation], x-permission: consolidation.run, x-idempotency: required, x-phase: 7, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /consolidation-runs/{id}/eliminate: {post: {operationId: eliminateConsolidation, tags: [Consolidation], x-permission: consolidation.run, x-idempotency: required, x-phase: 7, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /consolidation-runs/{id}/finalize:  {post: {operationId: finalizeConsolidation,  tags: [Consolidation], x-permission: consolidation.finalize, x-idempotency: required, x-phase: 7, description: "Locks a reproducible snapshot. Never mutates source statutory ledgers (doc 11).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /fx-remeasurement-runs: {post: {operationId: createFxRemeasurementRun, tags: [Consolidation], x-permission: fx.remeasure, x-idempotency: required, x-phase: 7, description: "Preview freely; exactly one run may reach POSTED per entity-book-period (F-037).", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- AI (phase 8) ----------
+  /ai/documents/extract:      {post: {operationId: extractDocument,       tags: [AI], x-permission: ai.extract,     x-idempotency: required, x-phase: 8, responses: {'202': {$ref: '#/components/responses/Accepted'}, default: {$ref: '#/components/responses/Error'}}}}
+  /ai/coding/suggest:         {post: {operationId: suggestCoding,         tags: [AI], x-permission: ai.suggest,     x-idempotency: n-a,      x-phase: 8, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /ai/reconciliation/suggest: {post: {operationId: suggestReconciliation, tags: [AI], x-permission: ai.suggest,     x-idempotency: n-a,      x-phase: 8, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /ai/questions:              {post: {operationId: askFinanceQuestion,    tags: [AI], x-permission: ai.query,       x-idempotency: n-a,      x-phase: 8, description: "Queries the allowlisted semantic layer, never raw SQL. Every number returns evidence links (doc 13).", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /ai/anomalies:              {get:  {operationId: listAnomalies,         tags: [AI], x-permission: ai.view,        x-idempotency: n-a,      x-phase: 8, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /ai/actions/{id}/approve:   {post: {operationId: approveAiAction,       tags: [AI], x-permission: ai.approve_action, x-idempotency: required, x-phase: 8, x-high-risk: true, description: "The human gate. AI never executes a financial effect without it (doc 13, Gate J).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /ai/actions/{id}/reject:    {post: {operationId: rejectAiAction,        tags: [AI], x-permission: ai.approve_action, x-idempotency: required, x-phase: 8, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- Integrations (phase 9) ----------
+  /integrations:                      {get:  {operationId: listIntegrations,      tags: [Integrations], x-permission: integration.view,   x-idempotency: n-a,      x-phase: 9, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /integrations/{id}/connect:         {post: {operationId: connectIntegration,    tags: [Integrations], x-permission: integration.manage, x-idempotency: required, x-phase: 9, x-high-risk: true, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /integrations/{id}/disconnect:      {post: {operationId: disconnectIntegration, tags: [Integrations], x-permission: integration.manage, x-idempotency: required, x-phase: 9, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /integrations/{id}/sync:            {post: {operationId: syncIntegration,       tags: [Integrations], x-permission: integration.sync,   x-idempotency: required, x-phase: 9, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'202': {$ref: '#/components/responses/Accepted'}, default: {$ref: '#/components/responses/Error'}}}}
+  /webhook-endpoints:
+    get:  {operationId: listWebhookEndpoints,  tags: [Integrations], x-permission: webhook.view,   x-idempotency: n-a,         x-phase: 9, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createWebhookEndpoint, tags: [Integrations], x-permission: webhook.manage, x-idempotency: recommended, x-phase: 9, description: "subscribed_events validated against contracts/events.yaml (F-047).", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /webhook-deliveries:            {get:  {operationId: listWebhookDeliveries, tags: [Integrations], x-permission: webhook.view,  x-idempotency: n-a,      x-phase: 9, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /webhook-deliveries/{id}/replay: {post: {operationId: replayWebhookDelivery, tags: [Integrations], x-permission: webhook.replay, x-idempotency: required, x-phase: 9, description: "Same event_id is retained on replay; consumers must be idempotent (doc 15).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'202': {$ref: '#/components/responses/Accepted'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- Migration (phase 9) ----------
+  /migration-jobs:
+    get:  {operationId: listMigrationJobs,  tags: [Migration], x-permission: migration.view,   x-idempotency: n-a,         x-phase: 9, responses: {'200': {$ref: '#/components/responses/Ok'},      default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createMigrationJob, tags: [Migration], x-permission: migration.manage, x-idempotency: recommended, x-phase: 9, responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}
+  /migration-jobs/{id}/upload:         {post: {operationId: uploadMigrationFile,   tags: [Migration], x-permission: migration.manage, x-idempotency: required, x-phase: 9, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'202': {$ref: '#/components/responses/Accepted'}, default: {$ref: '#/components/responses/Error'}}}}
+  /migration-jobs/{id}/validate:       {post: {operationId: validateMigrationJob,  tags: [Migration], x-permission: migration.manage, x-idempotency: required, x-phase: 9, description: "Re-runnable before final cutover (doc 17).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'202': {$ref: '#/components/responses/Accepted'}, default: {$ref: '#/components/responses/Error'}}}}
+  /migration-jobs/{id}/import:         {post: {operationId: importMigrationJob,    tags: [Migration], x-permission: migration.import, x-idempotency: required, x-phase: 9, description: "Idempotent by project and external ID (doc 17 acceptance).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'202': {$ref: '#/components/responses/Accepted'}, default: {$ref: '#/components/responses/Error'}}}}
+  /migration-jobs/{id}/reconciliation: {get:  {operationId: getMigrationReconciliation, tags: [Migration], x-permission: migration.view, x-idempotency: n-a, x-phase: 9, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /migration-jobs/{id}/cutover:        {post: {operationId: cutoverMigrationJob,   tags: [Migration], x-permission: migration.cutover, x-idempotency: required, x-phase: 9, x-high-risk: true, description: "Produces an immutable archived cutover report (Gate I).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+
+  # ---------- Platform admin (phase 1, continuous) ----------
+  /admin/tenants:                  {get:  {operationId: adminListTenants,    tags: [PlatformAdmin], x-permission: platform.tenant_view,    x-idempotency: n-a,      x-phase: 1, description: "Platform-superadmin scope. Does NOT grant access to customer financial records (doc 23).", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /admin/tenants/{id}/suspend:     {post: {operationId: adminSuspendTenant,  tags: [PlatformAdmin], x-permission: platform.tenant_manage,  x-idempotency: required, x-phase: 1, x-high-risk: true, description: "Never destroys accounting records (doc 23).", parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /admin/tenants/{id}/reactivate:  {post: {operationId: adminReactivateTenant, tags: [PlatformAdmin], x-permission: platform.tenant_manage, x-idempotency: required, x-phase: 1, parameters: [{$ref: '#/components/parameters/Id'}], responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /admin/support-grants:           {post: {operationId: createSupportGrant,  tags: [PlatformAdmin], x-permission: platform.support_grant,  x-idempotency: required, x-phase: 1, x-high-risk: true, description: "Time-bound, reason-required, fully audited, auto-expiring (doc 23).", responses: {'201': {$ref: '#/components/responses/Created'}, default: {$ref: '#/components/responses/Error'}}}}
+  /admin/feature-flags:            {get:  {operationId: listFeatureFlags,    tags: [PlatformAdmin], x-permission: platform.feature_flag,   x-idempotency: n-a,      x-phase: 0, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /admin/entitlements:             {get:  {operationId: listEntitlements,    tags: [PlatformAdmin], x-permission: platform.entitlement,    x-idempotency: n-a,      x-phase: 1, description: "Checked through the central service; plan names are never hard-coded in modules (doc 23).", responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+  /health:                         {get:  {operationId: getHealth, tags: [PlatformAdmin], security: [], x-permission: null, x-idempotency: n-a, x-phase: 0, responses: {'200': {$ref: '#/components/responses/Ok'}, default: {$ref: '#/components/responses/Error'}}}}
+
+# ===========================================================================
+components:
+
+  securitySchemes:
+    sessionBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        First-party session token. Carries a session ID checked against the `sessions` table on
+        refresh, so revocation is immediate (ADR-0005). Tenant is bound to the session, not the
+        credential.
+    oauth2:
+      type: oauth2
+      description: Third-party applications (doc 15). Scopes map 1:1 to x-permission values.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/oauth/authorize
+          tokenUrl: https://api.example.com/oauth/token
+          scopes: {}
+
+  parameters:
+    Id:         {name: id,     in: path,  required: true,  schema: {type: string, format: uuid}}
+    Cursor:     {name: cursor, in: query, required: false, schema: {type: string}, description: Opaque cursor; cursor pagination for all large collections.}
+    Limit:      {name: limit,  in: query, required: false, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+    BookId:     {name: accounting_book_id, in: query, required: false, schema: {type: string, format: uuid}}
+    PeriodFrom: {name: period_from, in: query, required: false, schema: {type: string, format: date}}
+    PeriodTo:   {name: period_to,   in: query, required: false, schema: {type: string, format: date}}
+    IfMatch:    {name: If-Match, in: header, required: false, schema: {type: string}, description: Optimistic concurrency on mutable setup and draft resources.}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: {type: string, maxLength: 255}
+      description: |
+        Required on operations marked `x-idempotency: required`. Protocol (F-044):
+        new key -> execute and store response; in-flight -> 409 IN_PROGRESS;
+        completed -> replay the stored response; same key with a different payload -> 422.
+
+  schemas:
+    Money:
+      type: string
+      pattern: '^-?\d+(\.\d+)?$'
+      description: Decimal string, never a JSON number (ADR-0006). Scale follows the currency's minor unit.
+    Currency: {type: string, minLength: 3, maxLength: 3, description: ISO 4217}
+    Uuid:     {type: string, format: uuid}
+    Error:
+      type: object
+      required: [code, message, correlation_id]
+      properties:
+        code:           {type: string, description: Stable machine-readable code. Never a stack trace or SQL (doc 15).}
+        message:        {type: string}
+        field_errors:   {type: array, items: {type: object, properties: {field: {type: string}, code: {type: string}, message: {type: string}}}}
+        correlation_id: {type: string}
+    PageMeta:
+      type: object
+      properties:
+        next_cursor: {type: string, nullable: true}
+        has_more:    {type: boolean}
+    Invoice:
+      type: object
+      description: Fields marked (F-019) were absent from the schema blueprint and are added by ADR-0003.
+      required: [id, legal_entity_id, accounting_book_id, customer_id, document_date, posting_date, currency, status, total]
+      properties:
+        id:                 {$ref: '#/components/schemas/Uuid'}
+        legal_entity_id:    {$ref: '#/components/schemas/Uuid'}
+        accounting_book_id: {$ref: '#/components/schemas/Uuid'}
+        branch_id:          {$ref: '#/components/schemas/Uuid'}
+        customer_id:        {$ref: '#/components/schemas/Uuid'}
+        invoice_number:     {type: string, nullable: true, description: Allocated at posting; never reused (ADR-0004).}
+        document_date:      {type: string, format: date}
+        posting_date:       {type: string, format: date, description: "(F-019) Determines the accounting period."}
+        due_date:           {type: string, format: date}
+        currency:           {$ref: '#/components/schemas/Currency'}
+        exchange_rate:      {type: string, nullable: true}
+        status:             {type: string, enum: [DRAFT, PENDING_APPROVAL, APPROVED, POSTED, PARTIALLY_PAID, PAID, VOID, CANCELLED]}
+        subtotal:           {$ref: '#/components/schemas/Money'}
+        tax_total:          {$ref: '#/components/schemas/Money'}
+        total:              {$ref: '#/components/schemas/Money'}
+        amount_paid:        {$ref: '#/components/schemas/Money'}
+        amount_due:         {$ref: '#/components/schemas/Money'}
+        lines:              {type: array, items: {$ref: '#/components/schemas/InvoiceLine'}}
+    InvoiceLine:
+      type: object
+      required: [line_no, description, quantity, unit_price, revenue_account_id, net_amount, gross_amount]
+      properties:
+        line_no:            {type: integer}
+        description:        {type: string}
+        quantity:           {type: string}
+        unit_price:         {$ref: '#/components/schemas/Money'}
+        discount_amount:    {$ref: '#/components/schemas/Money'}
+        revenue_account_id: {$ref: '#/components/schemas/Uuid'}
+        tax_code_id:        {$ref: '#/components/schemas/Uuid'}
+        net_amount:         {$ref: '#/components/schemas/Money'}
+        tax_amount:         {$ref: '#/components/schemas/Money'}
+        gross_amount:       {$ref: '#/components/schemas/Money'}
+        dimensions:         {type: array, items: {type: object, properties: {dimension_id: {$ref: '#/components/schemas/Uuid'}, dimension_value_id: {$ref: '#/components/schemas/Uuid'}}}}
+
+  requestBodies:
+    InvoiceCreate:
+      required: true
+      content: {application/json: {schema: {$ref: '#/components/schemas/Invoice'}}}
+
+  responses:
+    Ok:        {description: Success,  content: {application/json: {schema: {type: object}}}}
+    Created:   {description: Created,  content: {application/json: {schema: {type: object}}}}
+    Accepted:  {description: Accepted for asynchronous processing, content: {application/json: {schema: {type: object}}}}
+    NoContent: {description: No content}
+    InvoiceList:
+      description: Cursor page of invoices
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: {type: array, items: {$ref: '#/components/schemas/Invoice'}}
+              meta: {$ref: '#/components/schemas/PageMeta'}
+    Error:
+      description: |
+        Structured error with a stable code and correlation ID. Notable codes:
+        DUPLICATE_SUSPECTED (409, vendor bill override), IN_PROGRESS (409, idempotency),
+        PERIOD_CLOSED (422), APPROVAL_REQUIRED (403), UNBALANCED_JOURNAL (422),
+        OVER_ALLOCATION (422), INSUFFICIENT_STOCK (422).
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}

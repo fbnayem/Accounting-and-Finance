@@ -1,0 +1,22 @@
+node_modules/
+dist/
+build/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+
+.pnpm-store/
+.turbo/
+.vitest/
+
+# Benchmark output is machine-specific; committed baselines live in bench/baselines/
+bench/results/
+
+.DS_Store
+Thumbs.db
+*.log
