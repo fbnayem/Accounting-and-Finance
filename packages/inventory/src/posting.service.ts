@@ -9,11 +9,11 @@ import {
   sumExact,
   assertEntityPermission,
   consumeFifo,
-  weightedAverageIssue,
+  consumeWeightedAverage,
   averageUnitCost,
-  currencyPrecision,
   type TenantPrincipal,
   type DraftLineInput,
+  type LayerConsumption,
   type RoundingMode,
 } from '@acct/domain';
 import { writeInTenant, readInTenant, recordAudit, publish } from '@acct/database';
@@ -27,7 +27,12 @@ import {
   type ItemContext,
   type LocationContext,
 } from './lookup';
-import { mirrorMovement, movementValue, spreadCostAcrossTakes } from './stock';
+import {
+  mirrorMovement,
+  movementValue,
+  spreadCostAcrossTakes,
+  weightedAveragePoolValue,
+} from './stock';
 
 /**
  * Posting and reversing inventory documents — F-902 and F-908, and the home of
@@ -1020,62 +1025,69 @@ export class InventoryPostingService {
     }
 
     const byId = new Map(layers.map((l) => [l.id, l]));
-    let chunks: ConsumedChunk[];
+    let consumptions: readonly LayerConsumption[];
 
     if (item.valuation === 'FIFO') {
-      const result = consumeFifo(layers, quantity, currency, mode);
-      chunks = result.consumptions.map((c) => {
-        const layer = byId.get(c.layerId)!;
-        return {
-          layerId: c.layerId,
-          quantity: c.quantity,
-          unitCost: c.unitCost,
-          cost: c.cost,
-          receivedDate: layer.receivedDate,
-          isProvisional: layer.isProvisional,
-        };
-      });
+      consumptions = consumeFifo(layers, quantity, currency, mode).consumptions;
     } else if (item.valuation === 'WEIGHTED_AVERAGE') {
-      // One pool, valued as Σ(remaining × unit cost), never a stored average —
-      // see weightedAverageIssue for why. The pool value is rounded once at
-      // the minor unit before the issue calculation: a partly-consumed layer's
-      // remaining × receipt-cost can carry a sub-cent tail, and a full issue
-      // passes the pool value straight through to a journal line, which posts
-      // at the minor unit. The tail is rounding residue the reconciliation
-      // names (ROUNDING_RESIDUE_CONSUMED_LAYERS), not COGS. The layers are
-      // still drawn down in FIFO order for QUANTITY, because remaining
-      // quantities must live somewhere and (received_date, id) is the one
-      // order every reader agrees on; the COST of the issue is the pool
-      // calculation, spread over those rows so exit criterion 3's sum
-      // reproduces it exactly.
-      const precision = currencyPrecision(currency);
+      // One pool, never a stored average — see weightedAverageIssue for why an
+      // average is never stored. Its QUANTITY is what the locked layers still
+      // hold; its VALUE is received minus issued (`weightedAveragePoolValue`):
+      //
+      //   Σ round(original_quantity × unit_cost) − Σ consumption total_cost
+      //
+      // over EVERY layer the item has ever had here, consumed ones included.
+      // Doc 08 carries value as the source of truth: an issue credits Inventory
+      // at the average while the layers record receipts, so re-deriving the
+      // pool from Σ(remaining × receipt cost) diverges from the GL control at
+      // the first issue and never reconverges — the −10.40 exit criterion 1
+      // caught. Received minus issued is the control balance by construction —
+      // the received side is the once-rounded value each receipt posted Dr
+      // Inventory, the issued side the stored rows whose sum is each issue's
+      // Cr Inventory — and both are immutable stored facts (0043 freezes
+      // layers and consumption rows), the same rows exit criterion 3
+      // reproduces COGS from, so the pool cannot drift from either.
+      //
+      // The facts are read AFTER the provisional-shortfall handling above: a
+      // provisional layer created for this issue has no consumptions yet, so
+      // its value joins the pool exactly as its quantity already has.
+      //
+      // The layers are drawn down in FIFO order for QUANTITY, because remaining
+      // quantities must live somewhere and (received_date, id) is the one order
+      // every reader agrees on; the COST of the issue is the once-rounded pool
+      // calculation spread across those rows by consumeWeightedAverage, so
+      // exit criterion 3's sum reproduces it exactly.
       const poolQuantity = sumExact(layers.map((l) => l.remainingQuantity));
-      const poolValue = sumExact(layers.map((l) => l.remainingQuantity.mul(l.unitCost)))
-        .rescale(precision.minorUnit, mode)
-        .rescale(MONEY_SCALE);
-      const issue = weightedAverageIssue(poolQuantity, poolValue, quantity, currency, mode);
-      const average = averageUnitCost({ quantity: poolQuantity, value: poolValue });
-
-      const takes: { layerId: string; quantity: Decimal }[] = [];
-      let needed = quantity;
-      for (const layer of layers) {
-        if (needed.isZero()) break;
-        const take = layer.remainingQuantity.lt(needed) ? layer.remainingQuantity : needed;
-        takes.push({ layerId: layer.id, quantity: take });
-        needed = needed.sub(take);
-      }
-      const spread = spreadCostAcrossTakes(takes, issue.cogs, currency);
-      chunks = spread.map((row) => {
-        const layer = byId.get(row.layerId)!;
-        return {
-          layerId: row.layerId,
-          quantity: row.quantity,
-          unitCost: average,
-          cost: row.cost,
-          receivedDate: layer.receivedDate,
-          isProvisional: layer.isProvisional,
-        };
-      });
+      const { rows: factRows } = await client.query<{
+        original_quantity: string;
+        unit_cost: string;
+        consumed_value: string;
+      }>(
+        `SELECT l.original_quantity::text AS original_quantity,
+                l.unit_cost::text AS unit_cost,
+                coalesce((SELECT sum(c.total_cost)
+                            FROM inventory_cost_consumptions c
+                           WHERE c.cost_layer_id = l.id), 0)::text AS consumed_value
+           FROM inventory_cost_layers l
+          WHERE l.item_id = $1 AND l.warehouse_id = $2 AND l.accounting_book_id = $3`,
+        [item.id, warehouseId, book.bookId],
+      );
+      const poolValue = weightedAveragePoolValue(
+        factRows.map((row) => ({
+          originalQuantity: D(row.original_quantity),
+          unitCost: D(row.unit_cost),
+          consumedValue: D(row.consumed_value),
+        })),
+        currency,
+        mode,
+      );
+      consumptions = consumeWeightedAverage(
+        { quantity: poolQuantity, value: poolValue },
+        layers,
+        quantity,
+        currency,
+        mode,
+      ).consumptions;
     } else {
       throw new AppError(
         'NOT_IMPLEMENTED',
@@ -1083,6 +1095,20 @@ export class InventoryPostingService {
           'method it was not configured for.',
       );
     }
+
+    // The layer detail both methods need to write their rows and move their
+    // remainders; the costing above is the only thing that differed.
+    const chunks: ConsumedChunk[] = consumptions.map((c) => {
+      const layer = byId.get(c.layerId)!;
+      return {
+        layerId: c.layerId,
+        quantity: c.quantity,
+        unitCost: c.unitCost,
+        cost: c.cost,
+        receivedDate: layer.receivedDate,
+        isProvisional: layer.isProvisional,
+      };
+    });
 
     for (const chunk of chunks) {
       const layer = byId.get(chunk.layerId)!;

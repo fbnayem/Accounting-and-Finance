@@ -74,11 +74,24 @@ export class BudgetControlService {
   /**
    * The evaluation itself, callable from inside a mutation's transaction so the
    * decision and the spend it gates commit or roll back together.
+   *
+   * `lock` is what makes it a control rather than a reading. Write transactions
+   * run at READ COMMITTED (ADR-0004 rejected SERIALIZABLE as the default), so
+   * two approvals reaching for the last of a budget line would otherwise each
+   * take a snapshot before the other's commitment existed, both find room, and
+   * both spend it — the check would be inside a transaction and still be a race.
+   * With `lock` the budget row is taken FOR UPDATE *before* the consumption
+   * terms are summed, so the second transaction waits, then reads a total that
+   * includes the first one's encumbrance.
+   *
+   * The GET does not lock and must not: `readInTenant` opens a READ ONLY
+   * transaction, where PostgreSQL refuses FOR UPDATE outright.
    */
   async evaluateInTransaction(
     client: PoolClient,
     principal: TenantPrincipal,
     query: BudgetControlQuery,
+    options: { lock?: boolean } = {},
   ): Promise<BudgetControlResult> {
     // budget.view, not a mutation permission: reading what the budget allows is
     // a view of the budget. The mutation that acts on the verdict asserts its
@@ -113,6 +126,16 @@ export class BudgetControlService {
           'nothing to enforce here.',
         source: 'journal_lines',
       };
+    }
+
+    if (options.lock) {
+      // Ahead of every sum below, and on the budget rather than on each cell:
+      // `budget_lines` has no row for a (period, account) pair nobody budgeted,
+      // so there would be nothing to lock in exactly the case a second approver
+      // is racing towards. The budget row always exists, and serializing a
+      // little more than strictly necessary on a path that runs once per
+      // purchase-order approval costs nothing worth measuring.
+      await client.query(`SELECT id FROM budgets WHERE id = $1 FOR UPDATE`, [budget.id]);
     }
 
     // Exit criterion 6: the actual is a sum over posted journal lines, signed
@@ -199,7 +222,7 @@ export class BudgetControlService {
     principal: TenantPrincipal,
     query: BudgetControlQuery,
   ): Promise<BudgetControlResult> {
-    const result = await this.evaluateInTransaction(client, principal, query);
+    const result = await this.evaluateInTransaction(client, principal, query, { lock: true });
     if (result.decision === 'BLOCK') {
       throw new AppError('VALIDATION_FAILED', `BUDGET_BLOCKED: ${result.explanation}`, {
         details: { ...result },

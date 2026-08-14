@@ -353,10 +353,54 @@ export class ApController {
     });
   }
 
+  /**
+   * Approval is where doc 10's budget control is enforced, so the body may name
+   * the book whose budget controls. Omitted, the entity's primary book is used —
+   * which is the book the bill will post to unless someone says otherwise, and
+   * requiring it here would make every existing caller of this route wrong.
+   */
   @Post('purchase-orders/:id/approve')
   @Operation('approvePurchaseOrder')
-  async approvePurchaseOrder(@Req() request: AuthenticatedRequest, @Param('id') id: string) {
-    return this.procurement.approvePurchaseOrder(tenantPrincipal(request), parse(uuid, id));
+  async approvePurchaseOrder(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    const input = parse(z.object({ accounting_book_id: uuid.optional() }), body ?? {});
+    return this.procurement.approvePurchaseOrder(tenantPrincipal(request), parse(uuid, id), {
+      accountingBookId: input.accounting_book_id,
+    });
+  }
+
+  /**
+   * doc 10: "Closing/canceling PO releases unused commitment."
+   *
+   * `purchase_order.close`, not `purchase_order.approve`. A permission code is
+   * inherited whole by everything that declares it — its risk flag and every
+   * grant of it (F-921) — so a new capability gets a new code rather than
+   * widening an existing one by stealth.
+   */
+  @Post('purchase-orders/:id/close')
+  @Operation('closePurchaseOrder')
+  async closePurchaseOrder(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    const input = parse(
+      z.object({
+        // CLOSE by default: it is the ordinary end of an order's life, and
+        // CANCEL asserts something stronger — that it should never have been
+        // placed — which nobody should say by omission.
+        action: z.enum(['CLOSE', 'CANCEL']).optional(),
+        reason: reasonField.optional(),
+      }),
+      body ?? {},
+    );
+    return this.procurement.closePurchaseOrder(tenantPrincipal(request), parse(uuid, id), {
+      action: input.action,
+      reason: input.reason,
+    });
   }
 
   // -------------------------------------------------------------------------

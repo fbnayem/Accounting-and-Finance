@@ -48,6 +48,43 @@ import {
 
 const DRAFT_STATES = new Set(['DRAFT', 'PENDING_APPROVAL', 'APPROVED']);
 
+/**
+ * The seam between AP and doc 10's commitment accounting — F-106.
+ *
+ * `@acct/projects` already depends on `@acct/subledger` (project billing hands a
+ * draft invoice to ArService), so a direct import of CommitmentsService here
+ * would close a package cycle and neither package would build. Structural typing
+ * makes the fix free: this interface names exactly the in-transaction methods
+ * `CommitmentsService` already exposes, so `apps/api` wires the concrete service
+ * straight in and there is no adapter to keep in step.
+ *
+ * The port is deliberately *in-transaction only*. Relief that ran on its own
+ * connection after the bill posted could commit while the posting rolled back,
+ * leaving a commitment relieved against a journal that does not exist — which is
+ * the double-count this exists to prevent, with the sign reversed.
+ *
+ * Required at the constructor, not optional. An optional dependency is how this
+ * control was lost the first time: `assertSpendAllowed` and
+ * `releasePurchaseOrderInTransaction` were both written, both correct, and both
+ * unreachable, and nothing failed to build to say so. Made mandatory, "the
+ * commitment side is wired" is a fact the compiler checks rather than a thing
+ * somebody remembered.
+ */
+export interface CommitmentReliefPort {
+  /**
+   * Relieves `amount` of whatever commitment stands behind this PO line, capped
+   * at what is open, and returns null when the line was never committed —
+   * commitment accounting is optional per doc 10, so an uncommitted line is a
+   * fact about the order, not an error in the bill.
+   */
+  relieveForPurchaseOrderLineInTransaction(
+    client: PoolClient,
+    context: RequestContext,
+    principal: TenantPrincipal,
+    input: { purchaseOrderLineId: string; amount: string },
+  ): Promise<unknown>;
+}
+
 export interface BillLineInput {
   lineNo?: number | undefined;
   description: string;
@@ -85,6 +122,8 @@ export class ApService {
     // delegate to ArService's contact methods rather than carrying a second copy
     // of the same SQL that would drift from the first.
     private readonly ar: ArService,
+    /** doc 10 commitment relief on the posting path — see CommitmentReliefPort. */
+    private readonly commitments: CommitmentReliefPort,
   ) {}
 
   // =========================================================================
@@ -1047,6 +1086,20 @@ export class ApService {
         [id, result.entry.id],
       );
 
+      // doc 10, and the second half of F-106: the moment a PO line's spend
+      // becomes an actual posted journal line it stops being a commitment. Left
+      // out, the same taka is counted twice by the budget formula — once in
+      // `open commitments` and again in `actual posted` — and every remaining
+      // approval in the period is measured against an availability that is too
+      // low by the amount already spent.
+      //
+      // Net of tax, because that is what was committed: recoverable tax is a
+      // receivable, not spend, and relieving gross would over-relieve a
+      // commitment that never included it. Relief is capped at what is open by
+      // the commitment side, so a bill priced above the order consumes the
+      // commitment and no more.
+      const relieved = await this.relieveCommitments(client, context, principal, id);
+
       await publish(client, context, {
         eventType: 'vendor_bill.posted',
         aggregateType: 'vendor_bill',
@@ -1067,8 +1120,46 @@ export class ApService {
       return {
         ...rows[0],
         journal_entry: { id: result.entry.id, entry_number: result.entry.entry_number },
+        commitments_relieved: relieved,
       };
     });
+  }
+
+  /**
+   * Relieves the commitment behind every bill line that names a PO line.
+   *
+   * Reads the persisted lines rather than the calculated ones: `net_amount` on
+   * the row is what the commitment was measured against and what a later reader
+   * of this bill will see, and re-deriving it here would introduce a second
+   * opinion about the same number.
+   */
+  private async relieveCommitments(
+    client: PoolClient,
+    context: RequestContext,
+    principal: TenantPrincipal,
+    billId: string,
+  ): Promise<number> {
+    const { rows } = await client.query<{
+      purchase_order_line_id: string;
+      net_amount: string;
+    }>(
+      `SELECT purchase_order_line_id, net_amount::text AS net_amount
+         FROM vendor_bill_lines
+        WHERE vendor_bill_id = $1 AND purchase_order_line_id IS NOT NULL
+        ORDER BY line_no`,
+      [billId],
+    );
+    let relieved = 0;
+    for (const line of rows) {
+      const result = await this.commitments.relieveForPurchaseOrderLineInTransaction(
+        client,
+        context,
+        principal,
+        { purchaseOrderLineId: line.purchase_order_line_id, amount: line.net_amount },
+      );
+      if (result) relieved++;
+    }
+    return relieved;
   }
 
   // =========================================================================

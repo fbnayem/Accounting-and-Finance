@@ -606,7 +606,11 @@ describe('Phase 5 exit criterion 1 — a billed goods receipt clears GRNI instea
       .set(tenant.auth)
       .send({
         legal_entity_id: fx.legalEntityId,
-        code: '1400',
+        // 1450, not 1400: the shared chart gained an `inventory` CONTROL account
+        // at 1400 when Phase 5's criteria needed one, and this test's whole point
+        // is a destination nothing else posts to — so it needs a code the fixture
+        // does not already occupy, not merely a different name on the same one.
+        code: '1450',
         name: 'Inventory - received goods',
         account_type: 'ASSET',
       })

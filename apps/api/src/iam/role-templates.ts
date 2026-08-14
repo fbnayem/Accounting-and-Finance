@@ -108,6 +108,13 @@ const ACTION_TIER: Record<string, Tier> = {
   // exists to prevent. (`reverse` is already classified above, at OPERATE, where
   // journal.reverse put it — correcting by reversal is ordinary accounting work.)
   count_approve: 'APPROVE',
+  // Phase 5, F-106. Closing or cancelling a purchase order moves that order along
+  // its own lifecycle and releases the commitment it still holds — the same shape
+  // as `complete`, and procurement's own work rather than a judgement on anyone
+  // else's. It is a separate permission from `purchase_order.approve` because
+  // releasing budget is not the authority that committed it (F-921), but it is
+  // the same tier.
+  close: 'OPERATE',
 
   // Changes what others may do, moves money, or rewrites a determination.
   manage: 'ADMINISTER',

@@ -14,6 +14,20 @@ import { readInTenant } from '@acct/database';
  * from cost layers plus the landed cost capitalised onto them — the same rows
  * COGS is reproduced from, which is what lets valuation and COGS never
  * disagree about what a layer was worth.
+ *
+ * The two implemented methods genuinely value differently, and every valuation
+ * here branches on the effective method (`item_accounting_settings.
+ * valuation_override`, else `items.valuation`):
+ *
+ *   - FIFO: Σ round(remaining_quantity × unit_cost) — a FIFO layer's unit cost
+ *     IS what was paid for the units still in it.
+ *   - WEIGHTED_AVERAGE: Σ round(original_quantity × unit_cost) − Σ consumption
+ *     total_cost, over every layer the item has ever had, consumed ones
+ *     included — received minus issued. Doc 08 carries VALUE as the source of
+ *     truth for this method: issues credit Inventory at the average while
+ *     layers record receipts, so remaining × receipt cost stops being the
+ *     value at the first issue. See `weightedAveragePoolValue` in stock.ts,
+ *     which is this same expression on the posting side.
  */
 
 export class InventoryReportsService {
@@ -137,12 +151,23 @@ export class InventoryReportsService {
   ) {
     return readInTenant(this.pool, principal, async ({ client }) => {
       // 1. Subledger side: layers plus landed cost still attached to stock.
+      // The SAME per-method expression as valuationRows — one calculation, not
+      // a rival: FIFO layers at remaining × receipt cost, weighted-average
+      // layers at received minus issued (see the module comment). A consumed
+      // WA layer contributes its net — receipt value minus what issues charged
+      // out of it — which is why there is no remaining_quantity filter here.
       const { rows: valuationParts } = await client.query<{
         layer_value: string;
         landed_on_hand: string;
       }>(
-        `SELECT coalesce(sum(round(l.remaining_quantity * l.unit_cost, cur.minor_unit)), 0)::text
-                  AS layer_value,
+        `SELECT coalesce(sum(
+                  CASE WHEN coalesce(s.valuation_override, i.valuation) = 'WEIGHTED_AVERAGE'
+                    THEN round(l.original_quantity * l.unit_cost, cur.minor_unit)
+                         - coalesce((SELECT sum(c.total_cost)
+                                       FROM inventory_cost_consumptions c
+                                      WHERE c.cost_layer_id = l.id), 0)
+                    ELSE round(l.remaining_quantity * l.unit_cost, cur.minor_unit)
+                  END), 0)::text AS layer_value,
                 coalesce((
                   SELECT sum(a.allocated_amount - a.cogs_adjustment)
                     FROM landed_cost_allocations a
@@ -152,6 +177,9 @@ export class InventoryReportsService {
                 ), 0)::text AS landed_on_hand
            FROM inventory_cost_layers l
            JOIN currencies cur ON cur.code = l.currency
+           JOIN items i ON i.id = l.item_id
+           LEFT JOIN item_accounting_settings s
+             ON s.item_id = l.item_id AND s.legal_entity_id = l.legal_entity_id
           WHERE l.legal_entity_id = $1
             AND ($2::uuid IS NULL OR l.accounting_book_id = $2)`,
         [query.legalEntityId, query.accountingBookId ?? null],
@@ -243,20 +271,28 @@ export class InventoryReportsService {
         );
       }
 
-      // 3c. Rounding residue on fully consumed layers: a layer received at
+      // 3c. Rounding residue on fully consumed FIFO layers: a layer received at
       // 3 × 3.333333 posted 10.00 in, and three 1-unit FIFO issues took 9.99
       // out. The cent is real, explainable, and lives here until written off.
+      // FIFO-effective items only: a weighted-average layer's received-minus-
+      // consumed difference is already INSIDE the valuation (step 1 nets every
+      // layer, consumed or not), so naming it again here would double-count it
+      // against a gap that no longer exists.
       const { rows: residue } = await client.query<{ amount: string; count: string }>(
         `SELECT coalesce(sum(round(l.original_quantity * l.unit_cost, cur.minor_unit) - c.consumed),
                          0)::text AS amount,
                 count(*)::text AS count
            FROM inventory_cost_layers l
            JOIN currencies cur ON cur.code = l.currency
+           JOIN items i ON i.id = l.item_id
+           LEFT JOIN item_accounting_settings s
+             ON s.item_id = l.item_id AND s.legal_entity_id = l.legal_entity_id
            JOIN LATERAL (
              SELECT coalesce(sum(total_cost), 0) AS consumed
                FROM inventory_cost_consumptions WHERE cost_layer_id = l.id
            ) c ON true
           WHERE l.legal_entity_id = $1 AND l.remaining_quantity = 0 AND NOT l.is_provisional
+            AND coalesce(s.valuation_override, i.valuation) <> 'WEIGHTED_AVERAGE'
             AND ($2::uuid IS NULL OR l.accounting_book_id = $2)
             AND round(l.original_quantity * l.unit_cost, cur.minor_unit) <> c.consumed`,
         [query.legalEntityId, query.accountingBookId ?? null],
@@ -265,9 +301,10 @@ export class InventoryReportsService {
         items,
         'ROUNDING_RESIDUE_CONSUMED_LAYERS',
         residue[0],
-        'Fully consumed layers whose capitalised value differs from the sum of their ' +
+        'Fully consumed FIFO layers whose capitalised value differs from the sum of their ' +
           'consumptions by per-consumption rounding. The control retains these cents; the ' +
-          'valuation no longer shows the layer.',
+          'valuation no longer shows the layer. Weighted-average layers are excluded: their ' +
+          'received-minus-consumed difference is part of the valuation itself.',
       );
 
       // 3d. Landed cost whose layer has since been fully consumed: the
@@ -370,42 +407,61 @@ async function valuationRows(
     itemId?: string | undefined;
   },
 ): Promise<ValuationRow[]> {
-  // Layer values are rounded per layer at the minor unit — the same value the
-  // receipt posted — and landed cost on hand is (allocated − cogs_adjustment)
-  // for layers still holding stock, matching what LANDED_COST_CAPITALIZED
-  // debited into the control account.
+  // The layer value branches on the effective valuation method (see the module
+  // comment): FIFO sums the open layers at receipt cost, rounded per layer at
+  // the minor unit — the same value the receipt posted. WEIGHTED_AVERAGE is
+  // received minus issued over ALL of the item's layers in this warehouse,
+  // consumed ones included, because a consumed layer whose issues charged the
+  // average rather than its receipt cost keeps that difference in the pool.
+  // Landed cost on hand is (allocated − cogs_adjustment) for layers still
+  // holding stock, matching what LANDED_COST_CAPITALIZED debited into the
+  // control account — identical for both methods.
   const { rows } = await client.query<ValuationRow>(
-    `SELECT l.item_id, i.sku, i.name, l.warehouse_id, w.code AS warehouse_code,
-            coalesce(s.valuation_override, i.valuation)::text AS valuation_method,
-            sum(l.remaining_quantity)::text AS quantity,
-            sum(round(l.remaining_quantity * l.unit_cost, cur.minor_unit))::text AS layer_value,
-            coalesce((
-              SELECT sum(a.allocated_amount - a.cogs_adjustment)
-                FROM landed_cost_allocations a
-                JOIN inventory_cost_layers al ON al.id = a.cost_layer_id
-               WHERE al.item_id = l.item_id AND al.warehouse_id = l.warehouse_id
-                 AND al.remaining_quantity > 0
-            ), 0)::text AS landed_cost_on_hand,
-            (sum(round(l.remaining_quantity * l.unit_cost, cur.minor_unit)) + coalesce((
-              SELECT sum(a.allocated_amount - a.cogs_adjustment)
-                FROM landed_cost_allocations a
-                JOIN inventory_cost_layers al ON al.id = a.cost_layer_id
-               WHERE al.item_id = l.item_id AND al.warehouse_id = l.warehouse_id
-                 AND al.remaining_quantity > 0
-            ), 0))::text AS total_value,
-            bool_or(l.is_provisional) AS has_provisional
-       FROM inventory_cost_layers l
-       JOIN currencies cur ON cur.code = l.currency
-       JOIN items i ON i.id = l.item_id
-       JOIN warehouses w ON w.id = l.warehouse_id
-       LEFT JOIN item_accounting_settings s
-         ON s.item_id = l.item_id AND s.legal_entity_id = l.legal_entity_id
-      WHERE l.remaining_quantity > 0
-        AND ($1::uuid IS NULL OR l.legal_entity_id = $1)
-        AND ($2::uuid IS NULL OR l.warehouse_id = $2)
-        AND ($3::uuid IS NULL OR l.item_id = $3)
-      GROUP BY l.item_id, i.sku, i.name, l.warehouse_id, w.code, s.valuation_override, i.valuation
-      ORDER BY i.sku, w.code`,
+    `SELECT q.item_id, q.sku, q.name, q.warehouse_id, q.warehouse_code, q.valuation_method,
+            q.quantity::text AS quantity,
+            q.layer_value::text AS layer_value,
+            q.landed_cost_on_hand::text AS landed_cost_on_hand,
+            (q.layer_value + q.landed_cost_on_hand)::text AS total_value,
+            q.has_provisional
+       FROM (
+         SELECT l.item_id, i.sku, i.name, l.warehouse_id, w.code AS warehouse_code,
+                coalesce(s.valuation_override, i.valuation)::text AS valuation_method,
+                sum(l.remaining_quantity) AS quantity,
+                CASE WHEN coalesce(s.valuation_override, i.valuation) = 'WEIGHTED_AVERAGE'
+                  THEN (
+                    SELECT coalesce(sum(
+                             round(al.original_quantity * al.unit_cost, acur.minor_unit)
+                             - coalesce((SELECT sum(c.total_cost)
+                                           FROM inventory_cost_consumptions c
+                                          WHERE c.cost_layer_id = al.id), 0)), 0)
+                      FROM inventory_cost_layers al
+                      JOIN currencies acur ON acur.code = al.currency
+                     WHERE al.item_id = l.item_id AND al.warehouse_id = l.warehouse_id
+                  )
+                  ELSE sum(round(l.remaining_quantity * l.unit_cost, cur.minor_unit))
+                END AS layer_value,
+                coalesce((
+                  SELECT sum(a.allocated_amount - a.cogs_adjustment)
+                    FROM landed_cost_allocations a
+                    JOIN inventory_cost_layers al ON al.id = a.cost_layer_id
+                   WHERE al.item_id = l.item_id AND al.warehouse_id = l.warehouse_id
+                     AND al.remaining_quantity > 0
+                ), 0) AS landed_cost_on_hand,
+                bool_or(l.is_provisional) AS has_provisional
+           FROM inventory_cost_layers l
+           JOIN currencies cur ON cur.code = l.currency
+           JOIN items i ON i.id = l.item_id
+           JOIN warehouses w ON w.id = l.warehouse_id
+           LEFT JOIN item_accounting_settings s
+             ON s.item_id = l.item_id AND s.legal_entity_id = l.legal_entity_id
+          WHERE l.remaining_quantity > 0
+            AND ($1::uuid IS NULL OR l.legal_entity_id = $1)
+            AND ($2::uuid IS NULL OR l.warehouse_id = $2)
+            AND ($3::uuid IS NULL OR l.item_id = $3)
+          GROUP BY l.item_id, i.sku, i.name, l.warehouse_id, w.code,
+                   s.valuation_override, i.valuation
+       ) q
+      ORDER BY q.sku, q.warehouse_code`,
     [query.legalEntityId ?? null, query.warehouseId ?? null, query.itemId ?? null],
   );
   return rows;

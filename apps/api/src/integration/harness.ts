@@ -213,7 +213,21 @@ export type AccountKey =
   // "the clearing account clears exactly" would then be true of nothing.
   | 'bank2'
   | 'paymentClearing'
-  | 'processingFee';
+  | 'processingFee'
+  // Phase 5. `inventory` is a control account for the same reason `ar` and `ap`
+  // are: exit criterion 1 is that the valuation report reconciles to it, and a
+  // control account that is not flagged as one can be posted to directly by any
+  // manual journal, which is precisely how a subledger and its control drift
+  // apart. `inventoryVariance` is separate from `cogs` because a count variance
+  // and a cost of sale are different facts about the business, and doc 08 asks
+  // for both to be visible.
+  | 'inventory'
+  | 'cogs'
+  | 'inventoryVariance'
+  | 'assetCost'
+  | 'accumulatedDepreciation'
+  | 'depreciationExpense'
+  | 'disposalGainLoss';
 
 const CHART: readonly {
   key: AccountKey;
@@ -246,6 +260,19 @@ const CHART: readonly {
   { key: 'bank2', code: '1020', name: 'Bank - savings', type: 'ASSET' },
   { key: 'paymentClearing', code: '1150', name: 'Payment clearing', type: 'ASSET' },
   { key: 'processingFee', code: '6200', name: 'Payment processing fees', type: 'EXPENSE' },
+  { key: 'inventory', code: '1400', name: 'Inventory', type: 'ASSET', control: true },
+  { key: 'cogs', code: '5000', name: 'Cost of goods sold', type: 'EXPENSE' },
+  { key: 'inventoryVariance', code: '5100', name: 'Inventory variance', type: 'EXPENSE' },
+  { key: 'assetCost', code: '1500', name: 'Fixed asset cost', type: 'ASSET', control: true },
+  {
+    key: 'accumulatedDepreciation',
+    code: '1590',
+    name: 'Accumulated depreciation',
+    type: 'ASSET',
+    control: true,
+  },
+  { key: 'depreciationExpense', code: '6300', name: 'Depreciation expense', type: 'EXPENSE' },
+  { key: 'disposalGainLoss', code: '4950', name: 'Gain or loss on disposal', type: 'REVENUE' },
 ];
 
 /**
@@ -484,6 +511,92 @@ export async function createSubledger(
  * against a read model that a worker maintains would leave "the projection is
  * stale" as an explanation for a disagreement that is really an accounting one.
  */
+export interface InventoryFixture {
+  readonly warehouseId: string;
+  readonly locationId: string;
+  readonly secondLocationId: string;
+  /** FIFO-valued, with inventory/COGS/variance accounts mapped for the entity. */
+  readonly fifoItemId: string;
+  /** Weighted-average valued, same account mapping. */
+  readonly avgItemId: string;
+}
+
+/**
+ * A warehouse with two locations and two items, one per implemented valuation
+ * method, mapped to the Phase 5 chart.
+ *
+ * Two locations rather than one because a transfer that does not move stock
+ * between places is not a transfer, and criterion 1 has to survive one.
+ *
+ * Built through the API for the reason `createLedger` and `createSubledger` are:
+ * the exit criteria are claims about what the system does, and a fixture that
+ * INSERTed its way to a stocked warehouse would test those claims against a
+ * starting position the system cannot itself reach — which is exactly how a
+ * suite comes to prove something about a state no customer will ever be in.
+ */
+export async function createInventory(
+  tenant: TenantFixture,
+  ledger: LedgerFixture,
+): Promise<InventoryFixture> {
+  const suffix = counter++;
+
+  const warehouse = await http()
+    .post('/warehouses')
+    .set(tenant.auth)
+    .send({
+      legal_entity_id: ledger.legalEntityId,
+      code: `WH${suffix}`,
+      name: 'Main warehouse',
+    })
+    .expect(201);
+  const warehouseId = warehouse.body.id ?? warehouse.body.data?.id;
+
+  const makeLocation = async (code: string, name: string): Promise<string> => {
+    const response = await http()
+      .post(`/warehouses/${warehouseId}/locations`)
+      .set(tenant.auth)
+      .send({ code, name, kind: 'STORAGE' })
+      .expect(201);
+    return response.body.id ?? response.body.data?.id;
+  };
+
+  const locationId = await makeLocation('A1', 'Aisle 1');
+  const secondLocationId = await makeLocation('B1', 'Aisle 2');
+
+  const makeItem = async (sku: string, valuation: string): Promise<string> => {
+    const response = await http()
+      .post('/items')
+      .set(tenant.auth)
+      .send({
+        organization_id: tenant.organizationId,
+        sku,
+        name: `Item ${sku}`,
+        kind: 'INVENTORY',
+        base_uom: 'EA',
+        valuation,
+        accounting: [
+          {
+            legal_entity_id: ledger.legalEntityId,
+            inventory_account_id: ledger.accounts.inventory,
+            cogs_account_id: ledger.accounts.cogs,
+            variance_account_id: ledger.accounts.inventoryVariance,
+            purchase_account_id: ledger.accounts.grni,
+          },
+        ],
+      })
+      .expect(201);
+    return response.body.id ?? response.body.data?.id;
+  };
+
+  return {
+    warehouseId,
+    locationId,
+    secondLocationId,
+    fifoItemId: await makeItem(`FIFO-${suffix}`, 'FIFO'),
+    avgItemId: await makeItem(`AVG-${suffix}`, 'WEIGHTED_AVERAGE'),
+  };
+}
+
 export async function accountBalance(
   tenant: TenantFixture,
   ledger: LedgerFixture,

@@ -12,6 +12,7 @@ import {
   type TenantPrincipal,
 } from '@acct/domain';
 import { writeInTenant, recordAudit } from '@acct/database';
+import { BudgetControlService, type BudgetControlResult } from './budget-control.service';
 
 /**
  * Commitments — the substrate budget control stands on (F-106: before this
@@ -33,6 +34,15 @@ import { writeInTenant, recordAudit } from '@acct/database';
  * what happens to the purchase order, so both are exposed as
  * `...InTransaction` methods for the procurement paths to call, plus
  * pool-wrapped forms for wiring where no transaction exists yet.
+ *
+ * BudgetControlService is a constructor dependency rather than something the
+ * caller invokes beforehand, and that is the whole of F-106's second half. The
+ * check has to run against the same (period, account) the commitment is about to
+ * be written to, on the same connection, inside the same transaction — so that
+ * the verdict and the encumbrance it authorises commit or roll back together,
+ * and so that two approvals racing for the last of a budget line serialize on
+ * the row locks this transaction already holds. A caller that checked first and
+ * committed afterwards would be running a report, not a control.
  */
 
 interface CommitmentRow {
@@ -54,7 +64,10 @@ const COMMITMENT_RETURNING = `id, legal_entity_id, accounting_book_id, accountin
   open_amount::text AS open_amount, status::text AS status, created_at`;
 
 export class CommitmentsService {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly budgetControl: BudgetControlService,
+  ) {}
 
   async commitPurchaseOrder(
     principal: TenantPrincipal,
@@ -66,11 +79,19 @@ export class CommitmentsService {
   }
 
   /**
-   * Creates one commitment per PO line, in the period the goods are expected.
+   * Checks each PO line against doc 10's budget control and, if every line is
+   * allowed, creates one commitment per line in the period the goods are
+   * expected.
    *
    * Guarded by `purchase_order.approve`: the contract declares no commitment
    * permission of its own, and the one mutation that legitimately encumbers a
    * budget is the approval that authorizes the spend.
+   *
+   * Check and write are interleaved line by line rather than run as two passes,
+   * because the second line of an order must see the first line's encumbrance.
+   * Two passes would let a single order approve twice the budget it has: each
+   * line individually fits, and together they do not — the same failure mode
+   * `validateAllocations` exists to prevent on the settlement side.
    */
   async commitPurchaseOrderInTransaction(
     client: PoolClient,
@@ -97,7 +118,11 @@ export class CommitmentsService {
       [input.purchaseOrderId],
     );
     if (existing.length > 0) {
-      return { data: existing, already_committed: true };
+      // Deliberately before the budget check as well as before the write: a
+      // retried approval must not be refused by the very commitment its first
+      // attempt created. Re-checking here would make an at-budget order fail on
+      // the retry of its own success.
+      return { data: existing, already_committed: true, budget: [] as BudgetControlResult[] };
     }
 
     const { rows: lines } = await client.query<{
@@ -149,11 +174,31 @@ export class CommitmentsService {
     }
 
     const created: CommitmentRow[] = [];
+    const budget: BudgetControlResult[] = [];
     for (const line of lines) {
       const amount = D(line.net_amount).rescale(MONEY_SCALE);
       // Zero-value lines commit nothing, and a zero commitment could never be
-      // relieved (relief must be positive) — it would sit OPEN forever.
+      // relieved (relief must be positive) — it would sit OPEN forever. Checked
+      // before the budget call too: a proposed spend of zero against a line
+      // already over budget is "over budget" arithmetically, and refusing an
+      // approval that spends nothing would be a control refusing its own null
+      // case.
       if (amount.isZero()) continue;
+
+      // The enforcement. BLOCK throws VALIDATION_FAILED, REQUIRE_OVERRIDE throws
+      // APPROVAL_REQUIRED, and both messages carry every term of doc 10's
+      // formula — `AppError.details` is log-only, so a caller who has to act on
+      // the refusal can only read the numbers if the message states them.
+      budget.push(
+        await this.budgetControl.assertSpendAllowed(client, principal, {
+          legalEntityId: po.legal_entity_id,
+          accountingBookId: input.accountingBookId,
+          accountingPeriodId: period.id,
+          accountId: line.destination_account_id!,
+          amount: amount.toFixed(MONEY_SCALE),
+        }),
+      );
+
       const { rows } = await client.query<CommitmentRow>(
         `INSERT INTO commitments
            (id, tenant_id, legal_entity_id, accounting_book_id, accounting_period_id, account_id,
@@ -188,7 +233,10 @@ export class CommitmentsService {
       after: { commitments: created },
     });
 
-    return { data: created, already_committed: false };
+    // The verdicts travel back with the commitments so the approving route can
+    // surface a WARN. A WARN that only ever reached a log is doc 10's warn
+    // policy implemented as an INFORMATIONAL one.
+    return { data: created, already_committed: false, budget };
   }
 
   async releasePurchaseOrder(

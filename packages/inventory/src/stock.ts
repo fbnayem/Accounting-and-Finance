@@ -6,6 +6,7 @@ import {
   roundToMinorUnit,
   allocateProportionally,
   currencyPrecision,
+  sumExact,
   DEFAULT_ROUNDING,
   type RoundingMode,
 } from '@acct/domain';
@@ -56,15 +57,21 @@ export interface SpreadRow {
 }
 
 /**
- * Splits a weighted-average issue's COGS across the layer quantities it drew
- * down, so `inventory_cost_consumptions` gets one row per layer touched (Phase
- * 5 exit criterion 3) whose totals sum EXACTLY to the posted COGS.
+ * Splits an already-posted total across the layer quantities a movement
+ * touched, so `inventory_cost_consumptions` gets one row per layer (Phase 5
+ * exit criterion 3) whose totals sum EXACTLY to that posted amount.
  *
- * Rounding each row independently at the average unit cost does not have that
- * property — three rows of a 100.01 issue would each round to 33.34 and claim
- * 100.02 — so the reproduction "sum the stored rows" would differ from the
- * journal by a cent that no one can explain. `allocateProportionally` (largest
- * remainder) distributes the exact total instead.
+ * Rounding each row independently does not have that property — three rows of a
+ * 100.01 total would each round to 33.34 and claim 100.02 — so the reproduction
+ * "sum the stored rows" would differ from the journal by a cent that no one can
+ * explain. `allocateProportionally` (largest remainder) distributes the exact
+ * total instead.
+ *
+ * The issue side no longer comes through here: a weighted-average issue is
+ * `consumeWeightedAverage` in @acct/domain, which does this same distribution
+ * over the engine's once-rounded COGS and derives each row's unit cost from its
+ * own share. What is left is the reversal of an inbound movement, where the
+ * amount to spread is the value the original movement capitalised.
  */
 export function spreadCostAcrossTakes(
   takes: readonly LayerTake[],
@@ -110,6 +117,56 @@ export function movementValue(
 ): Decimal {
   const precision = currencyPrecision(currency);
   return quantity.mul(unitCost).rescale(precision.minorUnit, mode).rescale(MONEY_SCALE);
+}
+
+// ---------------------------------------------------------------------------
+// Weighted-average pool value — received minus issued
+// ---------------------------------------------------------------------------
+
+/** The immutable facts one cost layer contributes to a weighted-average pool. */
+export interface PoolLayerFact {
+  /** `inventory_cost_layers.original_quantity` — written once at receipt. */
+  readonly originalQuantity: Decimal;
+  /** `inventory_cost_layers.unit_cost` — 0043's guard keeps it immutable. */
+  readonly unitCost: Decimal;
+  /** Σ `total_cost` over the layer's `inventory_cost_consumptions` rows. */
+  readonly consumedValue: Decimal;
+}
+
+/**
+ * The value of a weighted-average pool: received minus issued.
+ *
+ *   Σ round(original_quantity × unit_cost, minor unit)  −  Σ consumption total_cost
+ *
+ * Doc 08 carries VALUE as the source of truth for weighted average. An issue
+ * credits Inventory by the average-based COGS while the layers lose QUANTITY
+ * that was priced at receipt cost, so Σ(remaining_quantity × unit_cost) stops
+ * being the pool value at the first issue and never reconverges — on the doc 08
+ * golden run it reads 286.00 where the GL control holds 275.60. Received minus
+ * issued IS the control balance by construction: the received side is per-layer
+ * `movementValue`, the same once-rounded number the receipt posted Dr
+ * Inventory, and the issued side is the stored consumption rows, whose sum is
+ * exactly the COGS each issue posted Cr Inventory.
+ *
+ * The facts must span EVERY layer the item has ever had in scope, including
+ * fully consumed ones: a consumed layer whose issues charged more (or less)
+ * than its receipt value keeps that difference in the pool — on the golden run
+ * the first layer contributes 200.00 − 212.00 = −12.00 forever. Dropping
+ * consumed layers is precisely how the drift happened.
+ *
+ * Both operands arrive at the minor unit after their own single rounding, so
+ * the difference is too — no rounding decision is taken here.
+ */
+export function weightedAveragePoolValue(
+  facts: readonly PoolLayerFact[],
+  currency: string,
+  mode: RoundingMode = DEFAULT_ROUNDING,
+): Decimal {
+  const received = sumExact(
+    facts.map((fact) => movementValue(fact.originalQuantity, fact.unitCost, currency, mode)),
+  );
+  const issued = sumExact(facts.map((fact) => fact.consumedValue));
+  return received.sub(issued).rescale(MONEY_SCALE);
 }
 
 // ---------------------------------------------------------------------------

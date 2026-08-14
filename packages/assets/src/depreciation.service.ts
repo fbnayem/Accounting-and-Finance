@@ -19,19 +19,28 @@ import { loadFixedAsset } from './register.service';
  * The depreciation run — doc 09's eight-step algorithm, and Phase 5 exit
  * criterion 5: "Depreciation rerun is idempotent for same asset/book/period."
  *
+ * Read the criterion at its own grain. It is stated per asset/book/period, not
+ * per period: a rerun must not charge an asset twice, and a period must still
+ * be able to depreciate an asset that was capitalized into it after the
+ * month-end run. Those are two halves of one criterion, and a service that
+ * refused every second run would satisfy the first by making the second
+ * impossible. 0013's `depreciation_runs_posted_uq` did exactly that and was
+ * dropped by 0046.
+ *
  * Idempotency here is layered, deliberately, because each layer catches a
  * different failure:
  *
  *   1. This service posts only lines whose status is SCHEDULED, claimed with
  *      `FOR UPDATE SKIP LOCKED` (ADR-0004) — a concurrent run claims disjoint
  *      lines instead of deadlocking or double-reading.
- *   2. A rerun that finds nothing eligible is a no-op that returns the
- *      original POSTED run, not an error: retrying a month-end job must be
+ *   2. A rerun that finds nothing eligible is a no-op that returns the POSTED
+ *      run that did the work, not an error: retrying a month-end job must be
  *      boring.
  *   3. `UNIQUE (asset_book_id, accounting_period_id)` blocks a second line per
  *      asset/book/period, and guard_depreciation_line_posted (0043) blocks the
  *      rerun that UPDATEs the existing POSTED line. The database holds the
- *      criterion even if this service is bypassed.
+ *      criterion even if this service is bypassed — which is why 0046 could
+ *      drop the run-level key without weakening anything.
  */
 
 export interface ScheduleLineCandidate {
@@ -186,22 +195,29 @@ export class DepreciationRunService {
       );
       const lines = eligibleScheduleLines(claimed);
 
-      const { rows: postedRuns } = await client.query<{
-        id: string;
-        total_amount: string;
-        journal_entry_id: string | null;
-        version: number;
-        created_at: string;
-      }>(
-        `SELECT id, total_amount::text AS total_amount, journal_entry_id, version, created_at
-           FROM depreciation_runs
-          WHERE legal_entity_id = $1 AND accounting_book_id = $2 AND accounting_period_id = $3
-            AND status = 'POSTED'`,
-        [book.legalEntityId, input.accountingBookId, input.accountingPeriodId],
-      );
-      const postedRun = postedRuns[0];
-
       if (lines.length === 0) {
+        // Nothing to post. Either this is a rerun and the period's work is
+        // already done, or nothing was ever scheduled into it. A period may now
+        // hold several POSTED runs (0046), so the "already done" answer names
+        // the most recent one rather than an arbitrary row — ordered by version
+        // and then created_at, which is the order they were posted in.
+        const { rows: postedRuns } = await client.query<{
+          id: string;
+          total_amount: string;
+          journal_entry_id: string | null;
+          version: number;
+          created_at: string;
+        }>(
+          `SELECT id, total_amount::text AS total_amount, journal_entry_id, version, created_at
+             FROM depreciation_runs
+            WHERE legal_entity_id = $1 AND accounting_book_id = $2 AND accounting_period_id = $3
+              AND status = 'POSTED'
+            ORDER BY version DESC, created_at DESC, id DESC
+            LIMIT 1`,
+          [book.legalEntityId, input.accountingBookId, input.accountingPeriodId],
+        );
+        const postedRun = postedRuns[0];
+
         if (postedRun) {
           // Exit criterion 5's first half: the rerun posts nothing and hands
           // back the run that already did the work, exactly as a replayed
@@ -231,24 +247,41 @@ export class DepreciationRunService {
         );
       }
 
-      if (postedRun) {
-        // Exit criterion 5's second half — an asset capitalized after the
-        // period's run should still post — is blocked by the schema, not this
-        // service: depreciation_runs_posted_uq admits ONE POSTED run per
-        // entity/book/period, so these lines cannot reach a POSTED run of
-        // their own. Refused with the facts named rather than surfacing the
-        // unique-index violation as a 500 at COMMIT (the F-809 lesson).
+      // Exit criterion 5's OTHER half, asserted at the grain the criterion is
+      // stated at: no asset book among the ones just claimed may already carry
+      // a POSTED line for this period.
+      //
+      // Unreachable while `UNIQUE (asset_book_id, accounting_period_id)` holds
+      // — a claimed line is SCHEDULED, and the UNIQUE means there is only ever
+      // the one row per asset book and period, so a POSTED sibling cannot
+      // exist. That is the point of asking. 0046 dropped the run-level key on
+      // the strength of that UNIQUE and of guard_depreciation_line_posted, so
+      // this service now checks the control it depends on rather than assuming
+      // it: if the UNIQUE ever goes missing, the double charge is refused here
+      // and named, instead of posting a second journal for an asset that is
+      // already depreciated for the month.
+      const { rows: alreadyPosted } = await client.query<{
+        id: string;
+        asset_book_id: string;
+      }>(
+        `SELECT id, asset_book_id
+           FROM depreciation_schedule_lines
+          WHERE accounting_period_id = $1
+            AND status = 'POSTED'
+            AND asset_book_id = ANY($2::uuid[])`,
+        [input.accountingPeriodId, lines.map((line) => line.asset_book_id)],
+      );
+      if (alreadyPosted.length > 0) {
         throw new AppError(
           'POSTED_IMMUTABLE',
-          `Run ${postedRun.id} already posted depreciation for period ${period.name}, and ` +
-            `depreciation_runs_posted_uq admits one POSTED run per entity/book/period — the ` +
-            `${lines.length} newly eligible line(s) cannot post until that index is rekeyed. ` +
-            `They remain SCHEDULED and will post with the next period's run once it is.`,
+          `Asset book${alreadyPosted.length === 1 ? '' : 's'} ` +
+            `${alreadyPosted.map((l) => l.asset_book_id).join(', ')} already posted depreciation ` +
+            `for period ${period.name}; an asset book depreciates at most once per period ` +
+            `(doc 09). Correct it by reversing the run that posted it, not by running again.`,
           {
             details: {
-              posted_run_id: postedRun.id,
-              eligible_lines: lines.length,
               accounting_period_id: period.id,
+              posted_line_ids: alreadyPosted.map((l) => l.id),
             },
           },
         );
@@ -285,9 +318,9 @@ export class DepreciationRunService {
         ],
       );
 
-      // The event id is the run's, not the period's: a later incremental run
-      // for the same period (once the unique index allows one) must produce
-      // its own journal, not replay-return this one.
+      // The event id is the run's, not the period's: the incremental run for a
+      // late-capitalized asset — which 0046 makes possible — must produce its
+      // own journal, not replay-return this one.
       const result = await this.documents.post(client, context, principal, book, {
         ruleCode: 'ASSET_DEPRECIATION',
         sourceType: 'depreciation_run',

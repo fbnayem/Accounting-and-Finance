@@ -31,9 +31,10 @@ privileges Gate C requires be revoked. Pointing both at the same role is rejecte
 
 ```
 apps/
-  api        NestJS. Contract-driven auth, permissions and idempotency; the Phase 1–4 domain.
+  api        NestJS. Contract-driven auth, permissions and idempotency; the Phase 1–5 domain.
   worker     Outbox drainer, idempotent event consumer, scheduled reversals and recurring journals.
-  web        Next.js. Administration screens, the journal grid, ledger, subledger and banking.
+  web        Next.js. Administration screens, the journal grid, ledger, subledger, banking,
+             inventory, fixed assets, projects and budgets.
 packages/
   config     Typed environment validation. Fails at boot, not at first use.
   domain     Decimal money, the rounding chain, the posting engine, the posting-rule language.
@@ -53,7 +54,7 @@ Three directories, in order of authority. Where they disagree, the earlier one w
 finding explains why.
 
 **[contracts/](contracts/)** — the single source of truth for schema, events and API.
-41 migrations · 246 tables · 177 events · 312 operations · 220 permissions. Supersedes the
+48 migrations · 246 tables · 177 events · 331 operations · 227 permissions. Supersedes the
 blueprints in the handoff package.
 
 **[docs/adr/](docs/adr/)** — ten ratified decisions. The ones that change day-to-day code:
@@ -114,5 +115,6 @@ Not conventions — each of these fails a build.
 | **Phase 2** — accounting kernel and general ledger       | **complete** · [evidence](docs/PHASE_2.md)                                              |
 | **Phase 3** — customers, vendors, AR, AP, tax, documents | **complete** · [evidence](docs/PHASE_3.md)                                              |
 | **Phase 4** — banking, cash, clearing and reconciliation | **complete** · [evidence](docs/PHASE_4.md)                                              |
-| Phase 5 — inventory, fixed assets, projects, budgets     | next                                                                                    |
-| Phases 5–11                                              | per [21_Phased_Implementation_Plan.md](<project plan/21_Phased_Implementation_Plan.md>) |
+| **Phase 5** — inventory, fixed assets, projects, budgets | **complete** · [evidence](docs/PHASE_5.md)                                              |
+| Phase 6 — reporting, approvals, period close, audit      | next                                                                                    |
+| Phases 6–11                                              | per [21_Phased_Implementation_Plan.md](<project plan/21_Phased_Implementation_Plan.md>) |

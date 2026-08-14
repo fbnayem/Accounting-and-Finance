@@ -28,6 +28,7 @@ import {
   TaxService,
   type StorageSigner,
 } from '@acct/subledger';
+import { CommitmentsService } from '@acct/projects';
 import type { loadApiEnv } from '@acct/config';
 import { API_ENV, DATABASE_POOL } from '../common/database.module';
 import { S3Storage } from './s3-storage';
@@ -60,6 +61,12 @@ export const SUBLEDGER_PROVIDERS: Provider[] = [
     // ApService takes ArService because `contacts` is one table with a kind, and
     // the vendor read/update methods delegate rather than carrying a second copy
     // of the same SQL.
+    //
+    // CommitmentsService arrives as `CommitmentReliefPort`: posting a bill against
+    // a PO line has to relieve that line's commitment in the posting transaction,
+    // or doc 10's formula counts the same spend as an open commitment and as an
+    // actual (F-106). The dependency points apps/api -> @acct/projects, never
+    // @acct/subledger -> @acct/projects, which is already taken.
     provide: ApService,
     useFactory: (
       pool: Pool,
@@ -67,8 +74,16 @@ export const SUBLEDGER_PROVIDERS: Provider[] = [
       documents: DocumentPostingService,
       tax: TaxService,
       ar: ArService,
-    ) => new ApService(pool, posting, documents, tax, ar),
-    inject: [DATABASE_POOL, PostingService, DocumentPostingService, TaxService, ArService],
+      commitments: CommitmentsService,
+    ) => new ApService(pool, posting, documents, tax, ar, commitments),
+    inject: [
+      DATABASE_POOL,
+      PostingService,
+      DocumentPostingService,
+      TaxService,
+      ArService,
+      CommitmentsService,
+    ],
   },
   {
     provide: SalesService,
@@ -85,6 +100,12 @@ export const SUBLEDGER_PROVIDERS: Provider[] = [
     inject: [DATABASE_POOL, PostingService, DocumentPostingService, ArService],
   },
   {
+    // The same CommitmentsService, arriving as `CommitmentPort`. This is the
+    // seam that makes doc 10's budget control enforceable: approving a purchase
+    // order checks every line against the available budget and writes the
+    // commitment inside one transaction, and closing or cancelling the order
+    // releases what is left. Both were implemented and unreachable before this
+    // argument existed.
     provide: ProcurementService,
     useFactory: (
       pool: Pool,
@@ -92,8 +113,16 @@ export const SUBLEDGER_PROVIDERS: Provider[] = [
       documents: DocumentPostingService,
       tax: TaxService,
       ap: ApService,
-    ) => new ProcurementService(pool, posting, documents, tax, ap),
-    inject: [DATABASE_POOL, PostingService, DocumentPostingService, TaxService, ApService],
+      commitments: CommitmentsService,
+    ) => new ProcurementService(pool, posting, documents, tax, ap, commitments),
+    inject: [
+      DATABASE_POOL,
+      PostingService,
+      DocumentPostingService,
+      TaxService,
+      ApService,
+      CommitmentsService,
+    ],
   },
   {
     provide: TaxReturnService,

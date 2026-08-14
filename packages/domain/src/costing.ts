@@ -113,6 +113,48 @@ export interface FifoConsumption {
   readonly totalCost: Decimal;
 }
 
+/** One layer and the quantity a walk took from it. */
+interface LayerDraw {
+  readonly layer: CostLayer;
+  readonly quantity: Decimal;
+}
+
+/**
+ * The quantity walk, shared by both implemented methods: first layer first,
+ * never more than the layer has, never more than was asked for.
+ *
+ * Weighted average draws down layers for QUANTITY exactly as FIFO does — the
+ * methods differ in what the drawn quantities COST, not in which layers empty
+ * first — and sharing the walk is what makes "exactly as FIFO does" a fact
+ * rather than a comment that drifts.
+ *
+ * It reports the shortfall instead of throwing it: FIFO running short means the
+ * stock is not there, weighted average running short means the pool and the
+ * layers disagree, and those are different sentences to say to a caller.
+ */
+function drawDown(
+  layers: readonly CostLayer[],
+  quantity: Decimal,
+): { draws: LayerDraw[]; shortfall: Decimal } {
+  const draws: LayerDraw[] = [];
+  let needed = quantity;
+
+  for (const layer of layers) {
+    if (!needed.isPositive()) break;
+    // A zero remainder is normal history (a CONSUMED layer); skipping it emits
+    // no zero-quantity consumption row — which `inventory_cost_consumptions`
+    // would refuse anyway under CHECK (quantity > 0). Negative remainders
+    // cannot exist under the F-032 CHECK, so nothing real is being skipped.
+    if (!layer.remainingQuantity.isPositive()) continue;
+
+    const take = layer.remainingQuantity.lt(needed) ? layer.remainingQuantity : needed;
+    draws.push({ layer, quantity: take });
+    needed = needed.sub(take);
+  }
+
+  return { draws, shortfall: needed };
+}
+
 /**
  * Consumes `quantity` from the given layers, first layer first, and returns
  * which layer supplied how much at what cost.
@@ -139,30 +181,11 @@ export function consumeFifo(
   const precision = resolve(currency);
   requirePositive(quantity, 'quantity');
 
-  const consumptions: LayerConsumption[] = [];
-  let needed = quantity;
-  let totalCost = Decimal.zero(MONEY_SCALE);
+  const { draws, shortfall } = drawDown(layers, quantity);
 
-  for (const layer of layers) {
-    if (needed.isZero()) break;
-    // A zero remainder is normal history (a CONSUMED layer); skipping it emits
-    // no zero-quantity consumption row. Negative remainders cannot exist under
-    // the F-032 CHECK, so nothing real is being skipped here.
-    if (!layer.remainingQuantity.isPositive()) continue;
-
-    const take = layer.remainingQuantity.lt(needed) ? layer.remainingQuantity : needed;
-    // Rounded per consumption, because each consumption is a stored audit row:
-    // a total rounded once over the whole issue could differ from the sum of
-    // its own rows by a minor unit, and then the reproduction fails by design.
-    const cost = roundCost(take.mul(layer.unitCost), precision, mode);
-    consumptions.push({ layerId: layer.id, quantity: take, unitCost: layer.unitCost, cost });
-    totalCost = totalCost.add(cost);
-    needed = needed.sub(take);
-  }
-
-  if (needed.isPositive()) {
-    // Every layer has been walked, so what was consumed is all there was.
-    const available = quantity.sub(needed);
+  if (shortfall.isPositive()) {
+    // Every layer has been walked, so what was drawn is all there was.
+    const available = quantity.sub(shortfall);
     throw new AppError(
       'INSUFFICIENT_STOCK',
       `FIFO issue of ${quantity.toString()} exceeds the ${available.toString()} remaining across ` +
@@ -172,7 +195,17 @@ export function consumeFifo(
     );
   }
 
-  return { consumptions, totalCost };
+  const consumptions: LayerConsumption[] = draws.map((draw) => ({
+    layerId: draw.layer.id,
+    quantity: draw.quantity,
+    unitCost: draw.layer.unitCost,
+    // Rounded per consumption, because each consumption is a stored audit row:
+    // a total rounded once over the whole issue could differ from the sum of
+    // its own rows by a minor unit, and then the reproduction fails by design.
+    cost: roundCost(draw.quantity.mul(draw.layer.unitCost), precision, mode),
+  }));
+
+  return { consumptions, totalCost: sumExact(consumptions.map((c) => c.cost)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +346,143 @@ export function weightedAverageIssue(
       // residue accumulates anywhere a count would not find it.
       value: currentValue.sub(cogs).rescale(MONEY_SCALE),
     },
+  };
+}
+
+export interface WeightedAverageConsumption {
+  /**
+   * One row per layer drawn down, in receipt order — the
+   * `inventory_cost_consumptions` rows the issue stores. Their `unitCost` and
+   * `cost` are both NOT NULL in the schema, and both are real numbers here.
+   */
+  readonly consumptions: readonly LayerConsumption[];
+  /** `weightedAverageIssue`'s COGS: the single rounding, untouched. */
+  readonly cogs: Decimal;
+  /**
+   * The per-row costs re-summed — the reproduction exit criterion 3 performs on
+   * the stored rows, computed the same way here so a divergence surfaces in the
+   * engine rather than in a report. Equal to `cogs` by construction of
+   * `allocateProportionally`, and the golden test asserts it rather than
+   * assuming it.
+   */
+  readonly totalCost: Decimal;
+  /** The pool after the issue: `weightedAverageIssue`'s remaining state. */
+  readonly remaining: WeightedAverageState;
+}
+
+/**
+ * A weighted-average issue as stored rows — the gap between an engine that
+ * rounds ONCE and a table whose per-layer `unit_cost` / `total_cost` are NOT
+ * NULL.
+ *
+ * The quantity comes off the layers in receipt order, exactly as FIFO does
+ * (same `drawDown`), because remaining quantities have to live somewhere and
+ * (received_date, id) is the one order every reader agrees on. The COST is the
+ * pool calculation — `weightedAverageIssue`, rounded once — spread across those
+ * drawn quantities by `allocateProportionally`, the same largest-remainder
+ * helper `allocateLandedCost` uses. The parts therefore sum to the once-rounded
+ * total EXACTLY, so:
+ *
+ *   - summing the stored rows reproduces COGS (doc 08: "every issue has a
+ *     reproducible valuation breakdown"; Phase 5 exit criterion 3);
+ *   - the engine's single rounding is untouched, so the ending value is still
+ *     receipts − issues and not the drifting 44.60 that a re-multiplied average
+ *     produces (see `weightedAverageIssue`).
+ *
+ * What must NOT be done instead: cost each row independently at the average.
+ * Three rows of a 100.01 issue each round to 33.34 and claim 100.02, and then
+ * the breakdown disagrees with the journal by a cent nobody can explain.
+ *
+ * `state` is the pool, and it is the caller's to carry: value is the source of
+ * truth (`WeightedAverageState`), and this function will not re-derive it from
+ * the layers' receipt costs — those two numbers stop being equal the moment a
+ * weighted-average issue takes value out of the pool that differs from the
+ * receipt cost of the units it drew.
+ */
+export function consumeWeightedAverage(
+  state: WeightedAverageState,
+  layers: readonly CostLayer[],
+  quantity: Decimal,
+  currency: string | CurrencyPrecision,
+  mode: RoundingMode = DEFAULT_ROUNDING,
+): WeightedAverageConsumption {
+  const precision = resolve(currency);
+
+  if (!atMinorUnit(state.value, precision)) {
+    // A full issue passes the pool value straight through as COGS, and
+    // `allocateProportionally` distributes whole minor units — so a pool
+    // carrying a sub-minor-unit tail would allocate to a total other than its
+    // own COGS, silently, which is the one failure this function exists to
+    // rule out. The caller rounds the pool once, where it can see why.
+    throw validationFailed(
+      [
+        {
+          field: 'state.value',
+          code: 'MINOR_UNIT',
+          message:
+            `Pool value ${state.value.toString()} has more precision than ` +
+            `${precision.code}'s ${precision.minorUnit} minor unit(s).`,
+        },
+      ],
+      'A weighted-average pool value must be at the currency minor unit before it is issued from.',
+    );
+  }
+
+  // Refuses a non-positive quantity and an over-issue against the pool.
+  const issue = weightedAverageIssue(state.quantity, state.value, quantity, precision, mode);
+
+  const { draws, shortfall } = drawDown(layers, quantity);
+  if (shortfall.isPositive()) {
+    // The pool said the stock was there and the layers do not have it. That is
+    // not a stock shortage — it is the pool and the layers disagreeing, and
+    // costing it anyway would write a breakdown that describes stock nobody
+    // holds. Reported as INSUFFICIENT_STOCK because that is what the caller
+    // must act on; the message says which side is short.
+    throw new AppError(
+      'INSUFFICIENT_STOCK',
+      `Weighted-average issue of ${quantity.toString()} drew only ` +
+        `${quantity.sub(shortfall).toString()} from the ${layers.length} layer(s) supplied, ` +
+        `though the pool reports ${state.quantity.toString()} on hand. The pool and its layers ` +
+        `disagree; costing the difference would invent a breakdown for stock no layer holds.`,
+      {
+        details: {
+          requested: quantity.toString(),
+          available: quantity.sub(shortfall).toString(),
+          pool_quantity: state.quantity.toString(),
+        },
+      },
+    );
+  }
+
+  // `issue.cogs` is already at the minor unit, so roundToMinorUnit changes
+  // nothing — it mints the RoundedMoney brand the allocator requires as proof a
+  // rounding boundary was crossed, exactly as in `allocateLandedCost`.
+  const parts = allocateProportionally(
+    roundToMinorUnit(Money.of(issue.cogs, precision.code), precision),
+    draws.map((draw) => draw.quantity),
+    precision,
+  );
+
+  const consumptions: LayerConsumption[] = draws.map((draw, i) => {
+    const cost = (parts[i] as Money).amount;
+    return {
+      layerId: draw.layer.id,
+      quantity: draw.quantity,
+      // Derived from this row's own allocated cost and drawn quantity, NOT the
+      // pool average: the row has to describe the number it carries, and the
+      // layer's receipt cost is not what this issue charged for it. The column
+      // is NOT NULL, so "no per-layer unit cost exists" is not an answer the
+      // schema accepts.
+      unitCost: cost.div(draw.quantity, MONEY_SCALE, mode),
+      cost,
+    };
+  });
+
+  return {
+    consumptions,
+    cogs: issue.cogs,
+    totalCost: sumExact(consumptions.map((c) => c.cost)),
+    remaining: issue.remaining,
   };
 }
 

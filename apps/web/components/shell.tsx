@@ -86,6 +86,38 @@ const SECTIONS: { title: string; links: { href: string; label: string; permissio
       ],
     },
     {
+      title: 'Inventory',
+      links: [
+        { href: '/items', label: 'Items', permission: 'item.view' },
+        { href: '/warehouses', label: 'Warehouses', permission: 'warehouse.view' },
+        { href: '/inventory-documents', label: 'Stock documents', permission: 'inventory.view' },
+        // Counting is the permission that makes this screen usable at all: the
+        // contract has no read route for a count, so a viewer would land on a
+        // page with nothing to look at.
+        { href: '/stock-counts', label: 'Stock counts', permission: 'inventory.count' },
+        { href: '/inventory-valuation', label: 'Valuation and GL', permission: 'inventory.view' },
+      ],
+    },
+    {
+      title: 'Fixed assets',
+      links: [
+        { href: '/assets', label: 'Asset register', permission: 'asset.view' },
+        { href: '/depreciation', label: 'Depreciation', permission: 'asset.view' },
+        {
+          href: '/assets/reconciliation',
+          label: 'Asset-to-GL reconciliation',
+          permission: 'report.view',
+        },
+      ],
+    },
+    {
+      title: 'Projects and budgets',
+      links: [
+        { href: '/projects', label: 'Projects', permission: 'project.view' },
+        { href: '/budgets', label: 'Budgets and control', permission: 'budget.view' },
+      ],
+    },
+    {
       title: 'Reports',
       links: [
         { href: '/trial-balance', label: 'Trial balance', permission: 'report.view' },

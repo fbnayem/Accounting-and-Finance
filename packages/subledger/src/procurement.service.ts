@@ -9,6 +9,7 @@ import {
   calculateDocument,
   toBase,
   type TenantPrincipal,
+  type RequestContext,
   type CalculatedDocument,
   type DocumentLineInput,
 } from '@acct/domain';
@@ -16,7 +17,7 @@ import { publish, recordAudit, readInTenant, writeInTenant } from '@acct/databas
 import { PostingService } from '@acct/ledger';
 import { TaxService, type ResolvedTaxCode } from './tax.service';
 import { DocumentPostingService, vendorBillLines } from './document-posting.service';
-import { ApService } from './ap.service';
+import { ApService, type CommitmentReliefPort } from './ap.service';
 import {
   lockTargets,
   validateAllocations,
@@ -39,7 +40,7 @@ import {
  *
  * Constructor:
  *
- *   new ProcurementService(pool, posting, documents, tax, ap)
+ *   new ProcurementService(pool, posting, documents, tax, ap, commitments?)
  *
  *     pool:      pg Pool
  *     posting:   @acct/ledger PostingService   (book context, periods)
@@ -49,6 +50,9 @@ import {
  *                — a vendor credit posts from its bill's lines and a payment run
  *                pays bills, so this service reads them through the service that
  *                owns them rather than carrying a second copy of the SQL)
+ *     commitments: CommitmentPort              (doc 10 budget control and
+ *                commitments — see the interface; a port rather than an import
+ *                because @acct/projects already depends on this package)
  */
 
 export interface RequisitionLineInput {
@@ -69,6 +73,44 @@ export interface PurchaseOrderLineInput {
   destinationAccountId?: string | undefined;
   taxCodeId?: string | undefined;
   inclusive?: boolean | undefined;
+}
+
+/**
+ * Everything procurement needs from doc 10's commitment accounting, expressed as
+ * an interface so no import crosses from @acct/subledger into @acct/projects —
+ * that direction is already taken (project billing raises an AR invoice through
+ * ArService) and closing the loop would break both builds.
+ *
+ * Every method takes the caller's `client` and `context`. That is the F-106
+ * requirement made structural: a budget check that ran on another connection
+ * could not see the row locks this approval holds, so two approvals could each
+ * read the same availability and both spend it. There is no pool-taking method
+ * on this port for a mutation path to reach for by mistake.
+ *
+ * `CommitmentsService` in @acct/projects satisfies this shape as it stands, so
+ * `apps/api` wires the concrete class in with no adapter between them.
+ */
+export interface CommitmentPort extends CommitmentReliefPort {
+  /**
+   * Checks every line of the order against doc 10's budget control and writes
+   * one commitment per line. Throws when the policy refuses — BLOCK as
+   * VALIDATION_FAILED, REQUIRE_OVERRIDE as APPROVAL_REQUIRED — with the numbers
+   * in the message.
+   */
+  commitPurchaseOrderInTransaction(
+    client: PoolClient,
+    context: RequestContext,
+    principal: TenantPrincipal,
+    input: { purchaseOrderId: string; accountingBookId: string },
+  ): Promise<unknown>;
+
+  /** doc 10: "Closing/canceling PO releases unused commitment." */
+  releasePurchaseOrderInTransaction(
+    client: PoolClient,
+    context: RequestContext,
+    principal: TenantPrincipal,
+    input: { purchaseOrderId: string; reason?: string | undefined },
+  ): Promise<unknown>;
 }
 
 export interface ExpenseItemInput {
@@ -92,6 +134,10 @@ export class ProcurementService {
     private readonly documents: DocumentPostingService,
     private readonly tax: TaxService,
     private readonly ap: ApService,
+    // Required, not optional. `assertSpendAllowed` and
+    // `releasePurchaseOrderInTransaction` were both written and both unreachable
+    // before this argument existed, and nothing failed to build to say so.
+    private readonly commitments: CommitmentPort,
   ) {}
 
   // =========================================================================
@@ -493,7 +539,31 @@ export class ProcurementService {
     });
   }
 
-  async approvePurchaseOrder(principal: TenantPrincipal, id: string) {
+  /**
+   * Approving an order is the moment its spend is authorised, so it is where
+   * doc 10's budget control is enforced and where the encumbrance is recorded.
+   *
+   * Both happen through `this.commitments`, on this transaction's client, before
+   * the status moves — F-106: a check that runs outside the transaction which
+   * performs the write it guards is a race, not a guard. Two approvals reaching
+   * for the last of a budget line serialize here on the `FOR UPDATE` this method
+   * already holds and on the commitment rows the check reads; the loser sees the
+   * winner's commitment and is refused, rather than both reading the same
+   * availability and both spending it.
+   *
+   * A refusal therefore leaves the order unapproved and uncommitted, because the
+   * throw rolls back the same transaction that took the lock.
+   *
+   * `accountingBookId` is which book's budget controls. A purchase order carries
+   * no book of its own — it is not an accounting document — so the caller may
+   * name one and otherwise the entity's primary book is used, which is the book
+   * the eventual bill will post to unless someone says otherwise.
+   */
+  async approvePurchaseOrder(
+    principal: TenantPrincipal,
+    id: string,
+    input: { accountingBookId?: string | undefined } = {},
+  ) {
     return writeInTenant(this.pool, principal, async ({ client, context }) => {
       const { rows } = await client.query<Record<string, unknown>>(
         `SELECT id, legal_entity_id, vendor_id, po_number, currency, total::text AS total,
@@ -507,6 +577,21 @@ export class ProcurementService {
 
       const transition = purchaseOrderApprovalTransition(order.status as string);
       if (transition.alreadyApproved) return order;
+
+      const accountingBookId = await this.resolveControllingBook(
+        client,
+        order.legal_entity_id as string,
+        input.accountingBookId,
+      );
+      // Budget control and the commitment, in that order, per line. Throws
+      // VALIDATION_FAILED on BLOCK and APPROVAL_REQUIRED on REQUIRE_OVERRIDE,
+      // with every term of doc 10's formula in the message.
+      const committed = await this.commitments.commitPurchaseOrderInTransaction(
+        client,
+        context,
+        principal,
+        { purchaseOrderId: id, accountingBookId },
+      );
 
       const { rows: updated } = await client.query<Record<string, unknown>>(
         `UPDATE purchase_orders SET status = 'APPROVED'
@@ -536,11 +621,136 @@ export class ProcurementService {
         tenantId: principal.tenantId,
         legalEntityId: order.legal_entity_id as string,
         before: order,
-        after: updated[0] as Record<string, unknown>,
+        after: { ...(updated[0] as Record<string, unknown>), commitment: committed },
       });
 
-      return updated[0];
+      // The verdicts ride back on the response so a WARN policy actually warns
+      // somebody. A warning that only reaches a log is an INFORMATIONAL policy
+      // wearing a different name.
+      return { ...updated[0], accounting_book_id: accountingBookId, commitment: committed };
     });
+  }
+
+  /**
+   * doc 10 acceptance: "Closing/canceling PO releases unused commitment."
+   *
+   * CLOSE ends an order that is finished with — delivered, billed, or simply not
+   * going to be pursued further. CANCEL ends one that should not have been
+   * placed. The two are one method because the commitment consequence is
+   * identical and doc 10 names them in one breath; they are two words in the
+   * request because the resulting status is what an auditor reads six months
+   * later, and "closed" and "cancelled" answer different questions.
+   *
+   * Everything still open on the order's commitments is released. What bills
+   * already consumed stays relieved-by-bill and is untouched, so closing an
+   * order that was 60% billed frees the 40% and does not resurrect the 60%.
+   *
+   * Idempotent: an order already CLOSED or CANCELLED returns unchanged, because
+   * the release relieves nothing the second time and a retried close must not
+   * fail on its own success.
+   */
+  async closePurchaseOrder(
+    principal: TenantPrincipal,
+    id: string,
+    input: { action?: 'CLOSE' | 'CANCEL' | undefined; reason?: string | undefined } = {},
+  ) {
+    return writeInTenant(this.pool, principal, async ({ client, context }) => {
+      const { rows } = await client.query<Record<string, unknown>>(
+        `SELECT id, legal_entity_id, vendor_id, po_number, currency, total::text AS total,
+                status::text AS status
+           FROM purchase_orders WHERE id = $1 FOR UPDATE`,
+        [id],
+      );
+      const order = rows[0];
+      if (!order) throw notFound('purchase order', id);
+      // Its own permission (F-921): a code shared with `approve` would hand
+      // every approver the ability to release budget and would make the two
+      // capabilities inherit one risk flag between them.
+      assertEntityPermission(principal, 'purchase_order.close', order.legal_entity_id as string);
+
+      const action = input.action ?? 'CLOSE';
+      const transition = purchaseOrderCloseTransition(order.status as string, action);
+      if (transition.already) return order;
+
+      // Released before the status moves, so a release that refuses leaves the
+      // order open rather than closed-with-its-budget-still-encumbered.
+      const released = await this.commitments.releasePurchaseOrderInTransaction(
+        client,
+        context,
+        principal,
+        { purchaseOrderId: id, reason: input.reason },
+      );
+
+      const { rows: updated } = await client.query<Record<string, unknown>>(
+        `UPDATE purchase_orders SET status = $2::po_status, closed_at = now()
+          WHERE id = $1
+          RETURNING id, legal_entity_id, vendor_id, po_number, currency, total::text AS total,
+                    status::text AS status, closed_at`,
+        [id, transition.status],
+      );
+
+      // No event is published. contracts/events.yaml declares
+      // purchase_order.approved and purchase_order.issued and nothing for the end
+      // of an order's life; publishing an undeclared type is refused by the
+      // outbox guard and inventing one here would put an event outside the
+      // contract that generates the catalogue. Reported for the contract owner.
+      await recordAudit(client, context, {
+        action: action === 'CANCEL' ? 'purchase_order.cancelled' : 'purchase_order.closed',
+        resourceType: 'purchase_order',
+        resourceId: id,
+        tenantId: principal.tenantId,
+        legalEntityId: order.legal_entity_id as string,
+        before: order,
+        after: { ...(updated[0] as Record<string, unknown>), released },
+        reason: input.reason ?? null,
+      });
+
+      return { ...updated[0], released };
+    });
+  }
+
+  /**
+   * Which book's budget controls this order.
+   *
+   * A named book is verified against the order's entity rather than trusted: a
+   * book from another entity would check the spend against a budget that has
+   * nothing to do with it, which is a control that reports success while
+   * measuring the wrong thing.
+   */
+  private async resolveControllingBook(
+    client: PoolClient,
+    legalEntityId: string,
+    given?: string | undefined,
+  ): Promise<string> {
+    if (given) {
+      const { rows } = await client.query<{ id: string }>(
+        `SELECT id FROM accounting_books WHERE id = $1 AND legal_entity_id = $2`,
+        [given, legalEntityId],
+      );
+      if (!rows[0]) {
+        throw new AppError(
+          'CROSS_ENTITY_REFERENCE',
+          `Accounting book ${given} does not belong to this order's legal entity.`,
+          { details: { accounting_book_id: given, legal_entity_id: legalEntityId } },
+        );
+      }
+      return rows[0].id;
+    }
+    const { rows } = await client.query<{ id: string }>(
+      `SELECT id FROM accounting_books
+        WHERE legal_entity_id = $1 AND is_primary AND status = 'ACTIVE'`,
+      [legalEntityId],
+    );
+    if (!rows[0]) {
+      throw new AppError(
+        'VALIDATION_FAILED',
+        'This legal entity has no active primary accounting book, so there is no budget for the ' +
+          'order to be checked against. Name an accounting book on the request, or create the ' +
+          "entity's primary book.",
+        { details: { legal_entity_id: legalEntityId } },
+      );
+    }
+    return rows[0].id;
   }
 
   // =========================================================================
@@ -2072,6 +2282,43 @@ export function purchaseOrderApprovalTransition(status: string): ApprovalTransit
     `This purchase order is ${status} and cannot be approved.`,
     { details: { status } },
   );
+}
+
+export interface CloseTransition {
+  readonly already: boolean;
+  readonly status: 'CLOSED' | 'CANCELLED';
+}
+
+/**
+ * The end of a purchase order's life, for doc 10's "Closing/canceling PO
+ * releases unused commitment".
+ *
+ * Any live status may be closed, including DRAFT: an order abandoned before it
+ * was ever approved holds no commitment, the release relieves nothing, and
+ * refusing would leave drafts accumulating with no way to retire them.
+ *
+ * Already CLOSED or CANCELLED reports `already` rather than failing, so a
+ * retried close succeeds and so close-then-cancel does not fail on the cancel —
+ * the release side is idempotent for the same reason. Asking to CANCEL an order
+ * that is CLOSED (or the reverse) is *not* silently accepted: the two words say
+ * different things to whoever reads the order later, and quietly answering a
+ * different question than the one asked is how a status stops meaning anything.
+ */
+export function purchaseOrderCloseTransition(
+  status: string,
+  action: 'CLOSE' | 'CANCEL',
+): CloseTransition {
+  const target = action === 'CANCEL' ? 'CANCELLED' : 'CLOSED';
+  if (status === target) return { already: true, status: target };
+  if (status === 'CLOSED' || status === 'CANCELLED') {
+    throw new AppError(
+      'VALIDATION_FAILED',
+      `This purchase order is already ${status} and cannot be ${target.toLowerCase()}. ` +
+        'Its commitments were released when it was ended the first time.',
+      { details: { status, requested: target } },
+    );
+  }
+  return { already: false, status: target };
 }
 
 /**

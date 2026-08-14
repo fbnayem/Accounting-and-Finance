@@ -1068,3 +1068,113 @@ SELECT set_config('app.tenant_id','11111111-1111-1111-1111-111111111111',true);
 UPDATE inventory_cost_layers SET remaining_quantity = 5
   WHERE id = 'af000000-0000-0000-0000-000000000001';
 COMMIT;
+
+-- =============================================================================
+-- Phase 5 exit criterion 5, BOTH halves — migration 0046.
+--
+-- T105-T109 hold the first half: a POSTED schedule line accepts no second
+-- posting, by UNIQUE (asset_book_id, accounting_period_id) and by
+-- guard_depreciation_line_posted. What follows is the half 0013's
+-- depreciation_runs_posted_uq made unreachable — an asset capitalized into a
+-- period that has ALREADY been run still reaching a POSTED run of its own —
+-- and the evidence that dropping that index left the first half exactly where
+-- it was. The ACCEPT scenarios are the load-bearing ones: a schema that simply
+-- refused every second run would pass every REJECT scenario in this file and
+-- still fail the criterion.
+-- =============================================================================
+
+\echo '### T118 fixture  the month-end run that posted the January line of FA-3 -> expect ACCEPT'
+-- The run row T107 posted without: the line was flipped to POSTED first, and
+-- guard_depreciation_line_posted now refuses to back-fill its
+-- depreciation_run_id, which is the guard doing its job rather than a gap. What
+-- matters below is the run row itself — the period now has one POSTED run.
+INSERT INTO depreciation_runs(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,version,status,total_amount,journal_entry_id,approved_at)
+  VALUES ('b9000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','77777777-7777-7777-7777-777777777777',1,'POSTED',90,'c0000000-0000-0000-0000-000000000001',now());
+
+\echo '### T119 F-916  an asset capitalized into the already-run period gets a SCHEDULED line -> expect ACCEPT'
+-- Month end is not an instant. The late vendor bill arrives, FA-4 is
+-- capitalized into January, and January has already been depreciated. Its
+-- schedule line is SCHEDULED in the same period that holds the POSTED line of
+-- FA-3, which the asset-book UNIQUE permits precisely because that UNIQUE is
+-- keyed on the ASSET BOOK and not on the period.
+INSERT INTO fixed_assets(id,tenant_id,legal_entity_id,asset_category_id,asset_number,name,currency,acquisition_cost,status)
+  VALUES ('b9000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','b2000000-0000-0000-0000-000000000001','FA-4','Late press','USD',600,'ACTIVE');
+INSERT INTO asset_books(id,tenant_id,fixed_asset_id,accounting_book_id,legal_entity_id,method,useful_life_months,depreciation_start_date,cost_basis)
+  VALUES ('b9000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','b9000000-0000-0000-0000-000000000002','55555555-5555-5555-5555-555555555555','33333333-3333-3333-3333-333333333333','STRAIGHT_LINE',12,'2026-01-01',600);
+INSERT INTO depreciation_schedule_lines(id,tenant_id,asset_book_id,legal_entity_id,accounting_period_id,scheduled_amount)
+  VALUES ('b9000000-0000-0000-0000-000000000004','11111111-1111-1111-1111-111111111111','b9000000-0000-0000-0000-000000000003','33333333-3333-3333-3333-333333333333','77777777-7777-7777-7777-777777777777',50);
+
+\echo '### T120 0046  a SECOND POSTED run in a period that already has one -> expect ACCEPT'
+-- The whole of 0046. Before it, depreciation_runs_posted_uq was keyed
+-- (legal_entity_id, accounting_book_id, accounting_period_id) WHERE status =
+-- POSTED, with no asset anywhere in the key, so this INSERT was rejected and
+-- FA-4 could never depreciate for the month it entered service. The incremental
+-- run posts its OWN journal: replaying the month-end entry would put the charge
+-- for FA-4 into a journal that was written before FA-4 existed.
+BEGIN;
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,entry_number,posting_date,source_type,base_currency,status,posted_at)
+  VALUES ('ba000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','88888888-8888-8888-8888-888888888888','77777777-7777-7777-7777-777777777777','JE-DEP-2','2026-01-31','MANUAL','USD','POSTED',now());
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_debit,base_currency,base_debit)
+  VALUES ('11111111-1111-1111-1111-111111111111','ba000000-0000-0000-0000-000000000001','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','77777777-7777-7777-7777-777777777777','2026-01-31',1,'a0000000-0000-0000-0000-000000000002','USD',50,'USD',50);
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_credit,base_currency,base_credit)
+  VALUES ('11111111-1111-1111-1111-111111111111','ba000000-0000-0000-0000-000000000001','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','77777777-7777-7777-7777-777777777777','2026-01-31',2,'a0000000-0000-0000-0000-000000000001','USD',50,'USD',50);
+INSERT INTO depreciation_runs(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,version,status,total_amount,journal_entry_id,approved_at)
+  VALUES ('b9000000-0000-0000-0000-000000000005','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','77777777-7777-7777-7777-777777777777',2,'POSTED',50,'ba000000-0000-0000-0000-000000000001',now());
+UPDATE depreciation_schedule_lines
+   SET status = 'POSTED', posted_amount = 50,
+       depreciation_run_id = 'b9000000-0000-0000-0000-000000000005',
+       journal_entry_id = 'ba000000-0000-0000-0000-000000000001'
+ WHERE id = 'b9000000-0000-0000-0000-000000000004';
+COMMIT;
+
+\echo '### T121 0046  a second schedule line for an asset book already scheduled in the period -> expect REJECT via depreciation_schedule_lines_asset_book_id_accounting_period_key'
+-- The control 0046 traded the run-level key for, still refusing what the run
+-- key was only a proxy for: one charge per asset book per period. FA-4
+-- depreciated for January in T120; a second line for the same book and period
+-- is the double charge, whichever run tries to carry it.
+INSERT INTO depreciation_schedule_lines(id,tenant_id,asset_book_id,legal_entity_id,accounting_period_id,scheduled_amount)
+  VALUES ('b9000000-0000-0000-0000-000000000006','11111111-1111-1111-1111-111111111111','b9000000-0000-0000-0000-000000000003','33333333-3333-3333-3333-333333333333','77777777-7777-7777-7777-777777777777',50);
+
+\echo '### T122 0046  a rerun UPDATEs the POSTED line of the incremental run -> expect REJECT via POSTED_IMMUTABLE'
+-- T108 proved this for the month-end run line. Repeated for the line the SECOND
+-- run posted, because that is the line 0046 made reachable: a capability added
+-- without the guard following it is how the rerun hole reopens for exactly the
+-- assets the new capability serves.
+UPDATE depreciation_schedule_lines
+   SET posted_amount = 100, journal_entry_id = 'c0000000-0000-0000-0000-000000000001'
+ WHERE id = 'b9000000-0000-0000-0000-000000000004';
+
+\echo '### T123 0046  the run key is gone and the two controls it was traded for are present -> expect ACCEPT'
+-- The trade, asserted rather than assumed. 0046 refuses to apply without these
+-- two; this is the standing check that a later migration cannot quietly drop
+-- one of them and leave depreciation idempotency resting on nothing. tgtype
+-- 26 = BEFORE (2) + DELETE (8) + UPDATE (16), and the guard reads OLD, so an
+-- AFTER or statement-level firing would be too late or blind.
+DO $$
+BEGIN
+  IF to_regclass('depreciation_runs_posted_uq') IS NOT NULL THEN
+    RAISE EXCEPTION 'depreciation_runs_posted_uq is back; T120 would be passing for the wrong reason';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_index i
+     WHERE i.indrelid = 'depreciation_schedule_lines'::regclass
+       AND i.indisunique AND i.indisvalid AND i.indpred IS NULL
+       AND i.indnatts = 2 AND i.indnkeyatts = 2
+       AND (SELECT array_agg(a.attname::text ORDER BY a.attname)
+              FROM pg_attribute a
+             WHERE a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey::smallint[]))
+           = ARRAY['accounting_period_id','asset_book_id'])
+  THEN
+    RAISE EXCEPTION 'depreciation_schedule_lines lost its UNIQUE (asset_book_id, accounting_period_id)';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+     WHERE t.tgrelid = 'depreciation_schedule_lines'::regclass
+       AND NOT t.tgisinternal
+       AND t.tgfoid = to_regproc('guard_depreciation_line_posted')
+       AND t.tgenabled <> 'D'
+       AND (t.tgtype & 26) = 26)
+  THEN
+    RAISE EXCEPTION 'guard_depreciation_line_posted no longer fires BEFORE UPDATE OR DELETE FOR EACH ROW';
+  END IF;
+END $$;

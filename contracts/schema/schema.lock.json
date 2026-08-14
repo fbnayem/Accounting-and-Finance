@@ -1,6 +1,6 @@
 {
   "generated_from": "contracts/schema",
-  "fingerprint": "515718ef12db6896d0580f8cf7eb19de7e05478084b3eed3893617998430a5f6",
+  "fingerprint": "93621af62592b6661b76916c17c88798f9722f00116d02d0e01cb6df9f0cb57d",
   "counts": {
     "tables": 246,
     "enums": 62,
@@ -2156,8 +2156,8 @@
       "cutover_checklists_pkey=CREATE UNIQUE INDEX cutover_checklists_pkey ON public.cutover_checklists USING btree (id)",
       "delegations_no_overlap=CREATE INDEX delegations_no_overlap ON public.delegations USING gist (delegator_user_id, COALESCE(scope_resource_type, '*'::text), tstzrange(valid_from, valid_to, '[)'::text))",
       "delegations_pkey=CREATE UNIQUE INDEX delegations_pkey ON public.delegations USING btree (id)",
+      "depreciation_runs_period_idx=CREATE INDEX depreciation_runs_period_idx ON public.depreciation_runs USING btree (legal_entity_id, accounting_book_id, accounting_period_id)",
       "depreciation_runs_pkey=CREATE UNIQUE INDEX depreciation_runs_pkey ON public.depreciation_runs USING btree (id)",
-      "depreciation_runs_posted_uq=CREATE UNIQUE INDEX depreciation_runs_posted_uq ON public.depreciation_runs USING btree (legal_entity_id, accounting_book_id, accounting_period_id) WHERE (status = 'POSTED'::run_status)",
       "depreciation_schedule_lines_asset_book_id_accounting_period_key=CREATE UNIQUE INDEX depreciation_schedule_lines_asset_book_id_accounting_period_key ON public.depreciation_schedule_lines USING btree (asset_book_id, accounting_period_id)",
       "depreciation_schedule_lines_pkey=CREATE UNIQUE INDEX depreciation_schedule_lines_pkey ON public.depreciation_schedule_lines USING btree (id)",
       "dimension_values_dimension_id_code_key=CREATE UNIQUE INDEX dimension_values_dimension_id_code_key ON public.dimension_values USING btree (dimension_id, code)",

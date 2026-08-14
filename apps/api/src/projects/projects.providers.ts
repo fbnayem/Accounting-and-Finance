@@ -41,9 +41,17 @@ export const PROJECTS_PROVIDERS: Provider[] = [
     // No route of its own: commitments are consequences of what happens to a
     // purchase order, so this is registered for the procurement mutation paths
     // to inject and call in their own transactions.
+    //
+    // It takes BudgetControlService because encumbering a budget and checking
+    // that the budget allows it are one decision (F-106). Kept apart, the check
+    // is a report somebody may or may not have read before writing the
+    // commitment; kept together, it runs on the same connection, in the same
+    // transaction, against the same (period, account) the commitment is written
+    // to, and a refusal rolls the encumbrance back with it.
     provide: CommitmentsService,
-    useFactory: (pool: Pool) => new CommitmentsService(pool),
-    inject: [DATABASE_POOL],
+    useFactory: (pool: Pool, budgetControl: BudgetControlService) =>
+      new CommitmentsService(pool, budgetControl),
+    inject: [DATABASE_POOL, BudgetControlService],
   },
   {
     provide: ForecastsService,

@@ -9,6 +9,7 @@ import {
   type LayerConsumption,
   weightedAverageCost,
   weightedAverageIssue,
+  consumeWeightedAverage,
   averageUnitCost,
   allocateLandedCost,
 } from './costing';
@@ -235,6 +236,188 @@ describe('weighted average', () => {
     // 0 value over 0 units is not "0.00 per unit" — a movement priced off that
     // fiction would post real money.
     expect(appError(() => averageUnitCost({ quantity: D('0'), value: D('0') })).code).toBe(
+      'VALIDATION_FAILED',
+    );
+  });
+});
+
+describe('consumeWeightedAverage', () => {
+  /**
+   * The doc 08 golden run, stopped where it gets awkward: receipts 100 @ 2.00
+   * and 150 @ 2.20, an issue of 120, then a receipt of 50 @ 2.50. The pool is
+   * 180 units at 400.60 — an average of 2.2255 recurring, exact at no scale,
+   * which is the whole reason the issue rounds once instead of per layer.
+   */
+  const pool = () => {
+    let s = weightedAverageCost(D('0'), D('0'), D('100'), D('2.00'), 'USD');
+    s = weightedAverageCost(s.quantity, s.value, D('150'), D('2.20'), 'USD');
+    const first = weightedAverageIssue(s.quantity, s.value, D('120'), 'USD');
+    return weightedAverageCost(
+      first.remaining.quantity,
+      first.remaining.value,
+      D('50'),
+      D('2.50'),
+      'USD',
+    );
+  };
+
+  /**
+   * The layers behind that pool. The first issue of 120 drew them down for
+   * QUANTITY in receipt order — L1 whole, 20 out of L2 — exactly as FIFO does,
+   * so 180 units remain across L2 and L3.
+   */
+  const layers: readonly CostLayer[] = [
+    { id: 'L1', remainingQuantity: D('0'), unitCost: D('2.00') },
+    { id: 'L2', remainingQuantity: D('130'), unitCost: D('2.20') },
+    { id: 'L3', remainingQuantity: D('50'), unitCost: D('2.50') },
+  ];
+
+  it('golden: rows sum to the COGS exactly, and the COGS is still the once-rounded 356.09', () => {
+    // Both halves, together, because either one alone is satisfiable by a
+    // broken implementation: rounding per layer at the average would also
+    // produce rows that sum to their own total, just not to 356.09; and
+    // rounding once without spreading the result would give 356.09 with no
+    // rows at all, which the NOT NULL columns cannot store.
+    const s = pool();
+    expect(s.quantity.toString()).toBe('180');
+    expect(s.value.toString()).toBe('400.60000000');
+
+    const r = consumeWeightedAverage(s, layers, D('160'), 'USD');
+
+    // Half one — the engine's single rounding survived: 400.60 × 160 / 180 =
+    // 356.0888…, rounded ONCE to 356.09, and the pool keeps the exact
+    // remainder 44.51 rather than the 44.60 a re-multiplied 2.23 average
+    // strands on the books (exit criterion 1).
+    expect(r.cogs.toString()).toBe('356.09000000');
+    expect(r.remaining.quantity.toString()).toBe('20');
+    expect(r.remaining.value.toString()).toBe('44.51000000');
+
+    // Half two — the stored rows reproduce it by addition, which is exit
+    // criterion 3 performed on exactly the numbers that will be in the table.
+    expect(rows(r)).toEqual([
+      ['L2', '130', '289.32000000'],
+      ['L3', '30', '66.77000000'],
+    ]);
+    expect(sumExact(r.consumptions.map((c) => c.cost)).equals(r.cogs)).toBe(true);
+    expect(r.totalCost.toString()).toBe('356.09000000');
+
+    // No row invented sub-cent precision, and none of them is the layer's
+    // receipt cost: the unit cost stored is this issue's cost for that row.
+    for (const c of r.consumptions) {
+      expect(c.cost.rescale(2).rescale(8).equals(c.cost)).toBe(true);
+    }
+    expect(r.consumptions.map((c) => c.unitCost.toString())).toEqual(['2.22553846', '2.22566667']);
+  });
+
+  it('draws quantity in receipt order and skips an exhausted layer', () => {
+    // L1 is CONSUMED; a zero-quantity consumption row would be noise the
+    // inventory_cost_consumptions CHECK (quantity > 0) refuses outright.
+    const r = consumeWeightedAverage(pool(), layers, D('160'), 'USD');
+    expect(r.consumptions.map((c) => c.layerId)).toEqual(['L2', 'L3']);
+  });
+
+  it('costs from the pool value it is given, never from the layers’ receipt costs', () => {
+    // The same 160 units, costed off Σ(remaining × receipt cost) = 130 × 2.20 +
+    // 50 × 2.50 = 411.00 instead of the carried 400.60, answer 365.33 — 9.24
+    // more COGS than the pool holds value for, and an ending book value of
+    // 45.67 against layers still showing 50.00. Value is the source of truth
+    // (see `WeightedAverageState`); a caller that hands this function a
+    // layer-derived pool is choosing that divergence, and this test is here so
+    // the choice is visible rather than accidental.
+    const layerDerived = consumeWeightedAverage(
+      { quantity: D('180'), value: D('411.00') },
+      layers,
+      D('160'),
+      'USD',
+    );
+    expect(layerDerived.cogs.toString()).toBe('365.33000000');
+    expect(layerDerived.totalCost.equals(layerDerived.cogs)).toBe(true);
+  });
+
+  it('spreads a total that no per-row rounding could reproduce', () => {
+    // 100.01 over three equal draws is 33.336… each; rounding each row
+    // independently books 33.34 × 3 = 100.02 and the breakdown no longer
+    // reproduces the journal. Largest remainder gives 33.34 / 33.34 / 33.33.
+    const thirds: readonly CostLayer[] = [
+      { id: 'a', remainingQuantity: D('1'), unitCost: D('30.00') },
+      { id: 'b', remainingQuantity: D('1'), unitCost: D('35.00') },
+      { id: 'c', remainingQuantity: D('1'), unitCost: D('35.01') },
+    ];
+    const r = consumeWeightedAverage(
+      { quantity: D('3'), value: D('100.01') },
+      thirds,
+      D('3'),
+      'USD',
+    );
+    // A full issue takes the whole pool value — nothing stranded on zero stock.
+    expect(r.cogs.toString()).toBe('100.01000000');
+    expect(r.remaining.value.toString()).toBe('0.00000000');
+    expect(r.consumptions.map((c) => c.cost.toString())).toEqual([
+      '33.34000000',
+      '33.34000000',
+      '33.33000000',
+    ]);
+    expect(r.totalCost.equals(r.cogs)).toBe(true);
+  });
+
+  it('respects a currency whose minor unit is not 2', () => {
+    // JPY: a third of a yen does not exist, so 1000 over three draws is
+    // 334/333/333 — and the rows still sum to the issue's COGS.
+    const yen: readonly CostLayer[] = [
+      { id: 'a', remainingQuantity: D('1'), unitCost: D('300') },
+      { id: 'b', remainingQuantity: D('1'), unitCost: D('350') },
+      { id: 'c', remainingQuantity: D('1'), unitCost: D('350') },
+    ];
+    const r = consumeWeightedAverage({ quantity: D('3'), value: D('1000') }, yen, D('3'), 'JPY');
+    expect(r.consumptions.map((c) => c.cost.toString())).toEqual([
+      '334.00000000',
+      '333.00000000',
+      '333.00000000',
+    ]);
+    expect(r.totalCost.toString()).toBe('1000.00000000');
+  });
+
+  it('refuses a pool value carrying more precision than the minor unit', () => {
+    // 44.515 would allocate to 44.51 and the stored rows would silently fail to
+    // reproduce the COGS — the one failure this function exists to rule out.
+    const err = appError(() =>
+      consumeWeightedAverage(
+        { quantity: D('20'), value: D('44.515') },
+        [{ id: 'L3', remainingQuantity: D('20'), unitCost: D('2.50') }],
+        D('20'),
+        'USD',
+      ),
+    );
+    expect(err.code).toBe('VALIDATION_FAILED');
+    expect(err.fieldErrors.map((f) => f.field)).toEqual(['state.value']);
+  });
+
+  it('refuses an issue the pool cannot cover', () => {
+    const err = appError(() => consumeWeightedAverage(pool(), layers, D('181'), 'USD'));
+    expect(err.code).toBe('INSUFFICIENT_STOCK');
+    expect(err.details).toEqual({ requested: '181', available: '180' });
+  });
+
+  it('refuses to cost stock the layers do not hold, even when the pool claims it', () => {
+    // The pool says 180, the layers hold 50. Costing the difference would write
+    // a breakdown for stock no layer holds; the disagreement is the finding.
+    const err = appError(() =>
+      consumeWeightedAverage(
+        pool(),
+        [{ id: 'L3', remainingQuantity: D('50'), unitCost: D('2.50') }],
+        D('160'),
+        'USD',
+      ),
+    );
+    expect(err.code).toBe('INSUFFICIENT_STOCK');
+    expect(err.details).toEqual({ requested: '160', available: '50', pool_quantity: '180' });
+  });
+
+  it('refuses a zero or negative issue quantity', () => {
+    expect(appError(() => consumeWeightedAverage(pool(), layers, D('0'), 'USD')).code).toBe(
+      'VALIDATION_FAILED',
+    );
+    expect(appError(() => consumeWeightedAverage(pool(), layers, D('-5'), 'USD')).code).toBe(
       'VALIDATION_FAILED',
     );
   });
