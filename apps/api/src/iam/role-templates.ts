@@ -101,6 +101,13 @@ const ACTION_TIER: Record<string, Tier> = {
   suspend: 'APPROVE',
   revoke: 'APPROVE',
   override_duplicate: 'APPROVE',
+  // Phase 5. A judgement on work someone else did, which is what separates APPROVE
+  // from OPERATE here: approving a stock count releases its variance as an
+  // adjustment to inventory and the variance account, and the counter approving
+  // their own count is the segregation-of-duties failure doc 08's count workflow
+  // exists to prevent. (`reverse` is already classified above, at OPERATE, where
+  // journal.reverse put it — correcting by reversal is ordinary accounting work.)
+  count_approve: 'APPROVE',
 
   // Changes what others may do, moves money, or rewrites a determination.
   manage: 'ADMINISTER',
@@ -186,9 +193,17 @@ export const FAMILIES = {
     'expense_claim',
   ],
   procurement: ['purchase_requisition', 'purchase_order', 'goods_receipt'],
-  banking: ['bank', 'bank_account', 'bank_connection', 'bank_rule', 'bank_transfer'],
+  // `settlement` is banking rather than a family of its own: doc 06 puts processor
+  // clearing inside cash management, and whoever reconciles the bank is who
+  // reconciles the processor — the batch arrives as a bank line like any other.
+  banking: ['bank', 'bank_account', 'bank_connection', 'bank_rule', 'bank_transfer', 'settlement'],
   inventory: ['item', 'warehouse', 'inventory'],
-  assets: ['asset'],
+  // `asset_category` sits with `asset` rather than in setup: it carries the cost,
+  // accumulated-depreciation, expense and disposal accounts every asset under it
+  // posts to, so granting it is granting a say in the asset postings themselves.
+  // Its `manage` action lands in ADMINISTER for the same reason `account.manage`
+  // does — it decides where other people's transactions go.
+  assets: ['asset', 'asset_category'],
   projects: ['project', 'budget', 'forecast'],
   tax: ['tax', 'tax_code', 'tax_period', 'tax_return', 'einvoice'],
   reporting: ['report', 'close', 'reconciliation', 'consolidation', 'fx'],

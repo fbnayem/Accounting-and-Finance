@@ -16,7 +16,7 @@ import {
  * which is why every result records the profile it ran against.
  */
 
-export type ResultStatus = 'pass' | 'fail-target' | 'fail-regression' | 'skipped';
+export type ResultStatus = 'pass' | 'fail-target' | 'fail-regression' | 'no-subject' | 'skipped';
 
 export interface WorkloadResult {
   readonly name: string;
@@ -74,11 +74,13 @@ export async function runBenchmarks(
     readonly baseline?: Baseline | undefined;
     readonly only?: string | undefined;
     readonly onResult?: (r: WorkloadResult) => void;
+    /** Injected by the tests. Production always measures the declared set. */
+    readonly workloads?: readonly Workload[] | undefined;
   },
 ): Promise<BenchReport> {
   const results: WorkloadResult[] = [];
 
-  for (const workload of WORKLOADS) {
+  for (const workload of options.workloads ?? WORKLOADS) {
     if (options.only && workload.name !== options.only) continue;
 
     if (workload.iterations === 0 || workload.availableFromPhase > options.phase) {
@@ -98,6 +100,30 @@ export async function runBenchmarks(
       results.push(result);
       options.onResult?.(result);
       continue;
+    }
+
+    // F-811. A workload that declares what it needs is checked for it before it
+    // is timed, and an empty subject fails rather than reporting a very fast
+    // query over nothing. This is the general form of F-730, which was fixed in
+    // the seeder — the one place that cannot see a database seeded by someone
+    // else, partially, or a stage ago.
+    if (workload.subject) {
+      const available = await workload.subject.count(pool, scope);
+      if (available === 0) {
+        const result: WorkloadResult = {
+          name: workload.name,
+          status: 'no-subject',
+          targetMs: workload.targetMs,
+          p50Ms: 0,
+          p95Ms: 0,
+          maxMs: 0,
+          iterations: 0,
+          reason: `no ${workload.subject.describe} — the measurement would be of an empty result`,
+        };
+        results.push(result);
+        options.onResult?.(result);
+        continue;
+      }
     }
 
     const samples = (await measure(pool, workload, scope)).sort((a, b) => a - b);
@@ -158,7 +184,9 @@ export function toBaseline(report: BenchReport): Baseline {
     recordedAt: report.ranAt,
     p95: Object.fromEntries(
       report.results
-        .filter((r) => r.status !== 'skipped')
+        // A workload that was skipped or had nothing to measure has no p95, and
+        // storing its zero would make the next run look like a 100% regression.
+        .filter((r) => r.status !== 'skipped' && r.status !== 'no-subject')
         .map((r) => [r.name, Number(r.p95Ms.toFixed(2))]),
     ),
   };

@@ -27,6 +27,18 @@
  *           an administrator deciding what a role may do, and a description naming
  *           one of the three routes it actually unlocks is a misleading answer to
  *           exactly the question the endpoint exists for.
+ *   UPDATE  a permission whose is_high_risk changed, which Phase 5 is where the third
+ *           kind first appeared (F-921). This one DOES affect authorization, and it
+ *           was the one case this generator could not see: it compared descriptions
+ *           only, so when `inventory.post` stopped being high-risk the generator
+ *           reported "registry is complete" while the registry and the contract
+ *           disagreed about a permission's risk classification. `pnpm contracts:check`
+ *           caught it, which is the right outcome — but a generator that reports
+ *           completeness about a field it never compares is the failure this codebase
+ *           keeps meeting, so it compares the field now.
+ *
+ * requires_reauth is derived from is_high_risk (ADR-0005 §3) rather than tracked
+ * separately, so it moves with it.
  */
 import { readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -47,7 +59,12 @@ const restated = contract.filter((p) => {
   return current !== undefined && current.description !== p.description;
 });
 
-if (missing.length === 0 && restated.length === 0) {
+const reclassified = contract.filter((p) => {
+  const current = seeded.get(p.code);
+  return current !== undefined && current.isHighRisk !== p.isHighRisk;
+});
+
+if (missing.length === 0 && restated.length === 0 && reclassified.length === 0) {
   console.log(`permission registry is complete: ${contract.length} permissions already seeded`);
   process.exit(0);
 }
@@ -69,6 +86,7 @@ const parts: string[] = [
 --
 -- ${missing.length} new permission(s), ${missing.filter((p) => p.isHighRisk).length} of them high-risk.
 -- ${restated.length} description(s) restated because a later phase added routes.
+-- ${reclassified.length} risk reclassification(s).
 -- =============================================================================
 `,
 ];
@@ -90,8 +108,29 @@ if (restated.length > 0) {
   );
 }
 
+if (reclassified.length > 0) {
+  parts.push(
+    '-- RISK RECLASSIFICATION. Its own section, deliberately: a change of\n' +
+      '-- is_high_risk changes who may hold the permission and whether holding it\n' +
+      '-- demands re-authentication, so it is a permission decision and reads as one\n' +
+      '-- here rather than being folded in beside a text update.\n' +
+      '--\n' +
+      '-- requires_reauth follows is_high_risk (ADR-0005 §3) and is set with it.\n' +
+      reclassified
+        .map(
+          (p) =>
+            `-- ${p.code}: ${seeded.get(p.code)?.isHighRisk ? 'high-risk' : 'ordinary'} -> ` +
+            `${p.isHighRisk ? 'high-risk' : 'ordinary'}\n` +
+            `UPDATE permissions SET is_high_risk = ${p.isHighRisk}, ` +
+            `requires_reauth = ${p.isHighRisk}\n WHERE code = ${sqlString(p.code)};`,
+        )
+        .join('\n'),
+  );
+}
+
 writeFileSync(join(SCHEMA_DIR, name), `${parts.join('\n')}\n`, 'utf8');
 console.log(
   `wrote contracts/schema/${name}: ${missing.length} new permission(s), ` +
-    `${restated.length} description(s) restated`,
+    `${restated.length} description(s) restated, ` +
+    `${reclassified.length} risk reclassification(s)`,
 );

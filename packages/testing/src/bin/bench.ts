@@ -105,9 +105,12 @@ async function main(): Promise<number> {
             ? `${c.green}pass${c.reset}`
             : r.status === 'skipped'
               ? `${c.dim}skip${c.reset}`
-              : `${c.red}FAIL${c.reset}`;
-        const p50 = r.status === 'skipped' ? '-' : `${r.p50Ms.toFixed(1)}ms`;
-        const p95 = r.status === 'skipped' ? '-' : `${r.p95Ms.toFixed(1)}ms`;
+              : r.status === 'no-subject'
+                ? `${c.red}NONE${c.reset}`
+                : `${c.red}FAIL${c.reset}`;
+        const unmeasured = r.status === 'skipped' || r.status === 'no-subject';
+        const p50 = unmeasured ? '-' : `${r.p50Ms.toFixed(1)}ms`;
+        const p95 = unmeasured ? '-' : `${r.p95Ms.toFixed(1)}ms`;
         console.log(
           `  ${r.name.padEnd(38)} ${p50.padStart(9)} ${p95.padStart(9)} ` +
             `${(r.targetMs + 'ms').padStart(9)}  ${badge}` +
@@ -117,16 +120,32 @@ async function main(): Promise<number> {
     });
 
     if (flag('record')) {
+      // A baseline recorded from a run with an empty subject is a baseline with a
+      // hole in it, and the hole is invisible afterwards: the workload simply has
+      // no stored p95 and never reports a regression again. Refuse instead.
+      const missing = report.results.filter((r) => r.status === 'no-subject');
+      if (missing.length > 0) {
+        console.error(
+          `\n${c.red}${c.bold}Refusing to record${c.reset} — ` +
+            `${missing.map((r) => r.name).join(', ')} had nothing to measure. ` +
+            `Seed the missing stage first (\`pnpm db:seed -- --only <stage>\`).`,
+        );
+        return 1;
+      }
       mkdirSync(dirname(baselinePath), { recursive: true });
       writeFileSync(baselinePath, `${JSON.stringify(toBaseline(report), null, 2)}\n`, 'utf8');
       console.log(`\nbaseline written: ${baselinePath}`);
       return 0;
     }
 
-    const measured = report.results.filter((r) => r.status !== 'skipped').length;
-    const skipped = report.results.length - measured;
+    const measured = report.results.filter(
+      (r) => r.status !== 'skipped' && r.status !== 'no-subject',
+    ).length;
+    const empty = report.results.filter((r) => r.status === 'no-subject').length;
+    const skipped = report.results.length - measured - empty;
     console.log(
       `\n${measured} workload(s) measured, ${skipped} not yet available` +
+        (empty ? `, ${c.red}${empty} with no subject to measure${c.reset}` : '') +
         `${baseline ? `, compared against a baseline from ${baseline.recordedAt.slice(0, 10)}` : ''}`,
     );
 

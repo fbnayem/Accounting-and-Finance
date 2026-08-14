@@ -398,6 +398,8 @@ export function salesInvoiceLines(input: {
  *
  * Posting rule catalog, VENDOR_BILL_POSTED:
  *   Dr Destination (expense/asset/inventory) — net, by line
+ *   Dr GRNI — instead of the destination, for a line billed against a posted
+ *             goods receipt
  *   Dr Recoverable Input Tax                 — by component
  *   Dr Destination                           — non-recoverable tax, capitalised
  *   Cr Accounts Payable                      — gross
@@ -406,10 +408,23 @@ export function salesInvoiceLines(input: {
  * tax account, which is doc 07's rule: "Nonrecoverable tax capitalizes into
  * inventory/asset cost or expense based on line destination." Posting it to a
  * tax account instead is the standard way an asset ends up understated.
+ *
+ * The GRNI substitution is F-713's second half. The receipt accrual already
+ * posted Dr destination / Cr GRNI when the goods arrived, so the bill's net
+ * debit for that line clears the accrual rather than hitting the destination a
+ * second time — otherwise one delivery's cost is stated twice and the GRNI
+ * credit stands forever.
  */
 export function vendorBillLines(input: {
   readonly calculated: CalculatedDocument;
   readonly destinationAccountByLine: ReadonlyMap<number, string>;
+  /**
+   * Lines whose cost a POSTED goods receipt already accrued: lineNo -> the GRNI
+   * account the accrual credited. The net debit for such a line goes to GRNI
+   * instead of the destination. Callers with no posted receipt behind the
+   * document omit this and every line debits its destination.
+   */
+  readonly grniAccountByLine?: ReadonlyMap<number, string> | undefined;
   readonly taxAccountByComponent: ReadonlyMap<string, string>;
   readonly apAccountId: string;
   readonly currency: string;
@@ -438,22 +453,53 @@ export function vendorBillLines(input: {
         { details: { line_no: line.lineNo } },
       );
     }
-    // Net plus the non-recoverable tax on this line: one debit, because they
-    // land in the same account and splitting them would make the expense report
-    // disagree with the expense.
     const nonrecoverable = line.components.reduce(
       (a: string, c: { nonrecoverableAmount: string }) => addDecimal(a, c.nonrecoverableAmount),
       '0',
     );
-    lines.push({
-      accountId,
-      description: `Line ${line.lineNo}`,
-      ...debit(addDecimal(line.netAmount, nonrecoverable)),
-      ...fx,
-      ...(input.dimensionsByLine?.get(line.lineNo)
-        ? { dimensions: input.dimensionsByLine.get(line.lineNo) as Record<string, string> }
-        : {}),
-    });
+    const dimensions = input.dimensionsByLine?.get(line.lineNo)
+      ? { dimensions: input.dimensionsByLine.get(line.lineNo) as Record<string, string> }
+      : {};
+    const grniAccountId = input.grniAccountByLine?.get(line.lineNo);
+    if (grniAccountId) {
+      // The receipt accrual already debited this line's destination when the
+      // goods arrived (GOODS_RECEIPT_ACCRUAL: Dr destination / Cr GRNI —
+      // F-713), so the bill's net debit clears GRNI instead. Debiting the
+      // destination again would state one delivery's cost twice, and GRNI —
+      // credited at receipt and relieved by nothing — would grow by every
+      // received-then-billed line forever.
+      lines.push({
+        accountId: grniAccountId,
+        description: `Line ${line.lineNo}`,
+        ...debit(line.netAmount),
+        ...fx,
+        ...dimensions,
+      });
+      // The accrual was quantity × unit price and carried no tax, so the
+      // non-recoverable half was never in GRNI: it still capitalises into the
+      // destination (doc 07), here on the bill — the first document that knows
+      // the tax exists.
+      if (!D(nonrecoverable).isZero()) {
+        lines.push({
+          accountId,
+          description: `Line ${line.lineNo} non-recoverable tax`,
+          ...debit(nonrecoverable),
+          ...fx,
+          ...dimensions,
+        });
+      }
+    } else {
+      // Net plus the non-recoverable tax on this line: one debit, because they
+      // land in the same account and splitting them would make the expense
+      // report disagree with the expense.
+      lines.push({
+        accountId,
+        description: `Line ${line.lineNo}`,
+        ...debit(addDecimal(line.netAmount, nonrecoverable)),
+        ...fx,
+        ...dimensions,
+      });
+    }
   }
 
   for (const component of input.calculated.taxByComponent) {

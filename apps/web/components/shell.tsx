@@ -77,6 +77,15 @@ const SECTIONS: { title: string; links: { href: string; label: string; permissio
       ],
     },
     {
+      title: 'Banking',
+      links: [
+        { href: '/bank-accounts', label: 'Bank accounts', permission: 'bank_account.view' },
+        { href: '/bank-transactions', label: 'Transactions', permission: 'bank.view' },
+        { href: '/bank-reconciliations', label: 'Reconciliation', permission: 'bank.reconcile' },
+        { href: '/cash-position', label: 'Cash position', permission: 'bank.view' },
+      ],
+    },
+    {
       title: 'Reports',
       links: [
         { href: '/trial-balance', label: 'Trial balance', permission: 'report.view' },

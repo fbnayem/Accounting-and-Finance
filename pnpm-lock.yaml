@@ -38,6 +38,12 @@ importers:
 
   apps/api:
     dependencies:
+      '@acct/assets':
+        specifier: workspace:*
+        version: link:../../packages/assets
+      '@acct/banking':
+        specifier: workspace:*
+        version: link:../../packages/banking
       '@acct/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -50,9 +56,15 @@ importers:
       '@acct/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@acct/inventory':
+        specifier: workspace:*
+        version: link:../../packages/inventory
       '@acct/ledger':
         specifier: workspace:*
         version: link:../../packages/ledger
+      '@acct/projects':
+        specifier: workspace:*
+        version: link:../../packages/projects
       '@acct/subledger':
         specifier: workspace:*
         version: link:../../packages/subledger
@@ -192,6 +204,74 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.1)(supports-color@7.2.0)
 
+  packages/assets:
+    dependencies:
+      '@acct/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@acct/database':
+        specifier: workspace:*
+        version: link:../database
+      '@acct/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@acct/ledger':
+        specifier: workspace:*
+        version: link:../ledger
+      '@acct/subledger':
+        specifier: workspace:*
+        version: link:../subledger
+      pg:
+        specifier: ^8.13.1
+        version: 8.22.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.4
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.9
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.1)(supports-color@7.2.0)
+
+  packages/banking:
+    dependencies:
+      '@acct/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@acct/database':
+        specifier: workspace:*
+        version: link:../database
+      '@acct/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@acct/ledger':
+        specifier: workspace:*
+        version: link:../ledger
+      '@acct/subledger':
+        specifier: workspace:*
+        version: link:../subledger
+      pg:
+        specifier: ^8.13.1
+        version: 8.22.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.4
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.9
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.1)(supports-color@7.2.0)
+
   packages/config:
     dependencies:
       dotenv:
@@ -264,6 +344,40 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.1)(supports-color@7.2.0)
 
+  packages/inventory:
+    dependencies:
+      '@acct/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@acct/database':
+        specifier: workspace:*
+        version: link:../database
+      '@acct/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@acct/ledger':
+        specifier: workspace:*
+        version: link:../ledger
+      '@acct/subledger':
+        specifier: workspace:*
+        version: link:../subledger
+      pg:
+        specifier: ^8.13.1
+        version: 8.22.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.4
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.9
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.1)(supports-color@7.2.0)
+
   packages/ledger:
     dependencies:
       '@acct/contracts':
@@ -275,6 +389,34 @@ importers:
       '@acct/domain':
         specifier: workspace:*
         version: link:../domain
+      pg:
+        specifier: ^8.13.1
+        version: 8.22.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.4
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.9
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.1)(supports-color@7.2.0)
+
+  packages/projects:
+    dependencies:
+      '@acct/database':
+        specifier: workspace:*
+        version: link:../database
+      '@acct/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@acct/subledger':
+        specifier: workspace:*
+        version: link:../subledger
       pg:
         specifier: ^8.13.1
         version: 8.22.0

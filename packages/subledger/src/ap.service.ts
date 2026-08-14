@@ -969,9 +969,43 @@ export class ApService {
         }
       }
 
+      // F-713's second half: a line billed against a POSTED goods receipt was
+      // already debited to its destination by the receipt accrual, so its bill
+      // debit must clear GRNI instead — otherwise the destination carries one
+      // delivery twice and the GRNI credit is never relieved. Gated on the
+      // receipt being POSTED because a receipt that never posted put nothing
+      // into GRNI for this bill to take out.
+      const { rows: accruedLines } = await client.query<{ line_no: number }>(
+        `SELECT l.line_no
+           FROM vendor_bill_lines l
+           JOIN goods_receipt_lines grl ON grl.id = l.goods_receipt_line_id
+           JOIN goods_receipts gr ON gr.id = grl.goods_receipt_id
+          WHERE l.vendor_bill_id = $1 AND gr.status = 'POSTED'`,
+        [id],
+      );
+      let grniAccountByLine: Map<number, string> | undefined;
+      if (accruedLines.length > 0) {
+        const grniAccountId = await this.policyAccount(
+          client,
+          book.legalEntityId,
+          'grni_account_id',
+          bill.posting_date as string,
+        );
+        if (!grniAccountId) {
+          throw new AppError(
+            'VALIDATION_FAILED',
+            'This bill is matched to a posted goods receipt, but no Goods Received Not Invoiced ' +
+              'account is configured to clear the accrual against. Set grni_account_id on the ' +
+              'accounting policy.',
+          );
+        }
+        grniAccountByLine = new Map(accruedLines.map((row) => [row.line_no, grniAccountId]));
+      }
+
       const lines = vendorBillLines({
         calculated,
         destinationAccountByLine: destinationByLine,
+        grniAccountByLine,
         taxAccountByComponent: taxAccounts,
         apAccountId,
         currency: bill.currency as string,

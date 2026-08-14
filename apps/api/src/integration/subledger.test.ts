@@ -585,3 +585,141 @@ async function threeWayFixture(input: {
 
   return { billId: bill.body.id as string };
 }
+
+// ---------------------------------------------------------------------------
+
+describe('Phase 5 exit criterion 1 — a billed goods receipt clears GRNI instead of restating cost', () => {
+  it('debits the destination once across receipt and bill, and GRNI nets to zero', async () => {
+    // The receipt posts Dr destination / Cr GRNI; the bill for the same goods
+    // must post Dr GRNI / Cr AP. The broken shape — the bill debiting the
+    // destination again — passed every reconciliation above because none of
+    // them asked whether the destination agrees with what was delivered. Both
+    // assertions here read the trial balance with source=journal_lines
+    // (accountBalance), because a reconciliation that trusts a read model to
+    // prove the read model proves nothing.
+    const MAR = `${YEAR}-03-15`;
+
+    // A destination account no other test posts to, so "debited once" is a
+    // claim about a total rather than about a delta someone has to compute.
+    const destination = await http()
+      .post('/accounts')
+      .set(tenant.auth)
+      .send({
+        legal_entity_id: fx.legalEntityId,
+        code: '1400',
+        name: 'Inventory - received goods',
+        account_type: 'ASSET',
+      })
+      .expect(201);
+    const destinationId = destination.body.id as string;
+
+    const order = await http()
+      .post('/purchase-orders')
+      .set(tenant.auth)
+      .send({
+        legal_entity_id: fx.legalEntityId,
+        vendor_id: fx.vendorId,
+        document_date: MAR,
+        currency: 'GBP',
+        lines: [
+          {
+            description: 'Stock widgets',
+            quantity: '10',
+            unit_price: '10.00',
+            destination_account_id: destinationId,
+          },
+        ],
+      })
+      .expect(201);
+    const orderLineId = order.body.lines[0].id as string;
+    await http()
+      .post(`/purchase-orders/${order.body.id}/approve`)
+      .set(tenant.auth)
+      .set(key('approve-po-grni'))
+      .send({})
+      .expect(200);
+
+    const receipt = await http()
+      .post('/goods-receipts')
+      .set(tenant.auth)
+      .set(key('grn-grni'))
+      .send({
+        accounting_book_id: fx.accountingBookId,
+        vendor_id: fx.vendorId,
+        purchase_order_id: order.body.id,
+        receipt_date: MAR,
+        posting_date: MAR,
+        lines: [
+          {
+            purchase_order_line_id: orderLineId,
+            description: 'Stock widgets',
+            quantity_received: '10',
+            quantity_accepted: '10',
+            unit_price: '10.00',
+            destination_account_id: destinationId,
+          },
+        ],
+      })
+      .expect(201);
+    const receiptLineId = receipt.body.lines[0].id as string;
+
+    await http()
+      .post(`/goods-receipts/${receipt.body.id}/post`)
+      .set(tenant.auth)
+      .set(key('post-grn-grni'))
+      .send({})
+      .expect(200);
+
+    // The accrual is the baseline the bill has to clear: the delivery's cost
+    // in the destination, the same amount owed as GRNI.
+    expect(await accountBalance(tenant, fx, destinationId)).toBeCloseTo(100, 6);
+    expect(await accountBalance(tenant, fx, fx.accounts.grni)).toBeCloseTo(-100, 6);
+
+    const bill = await http()
+      .post('/vendor-bills')
+      .set(tenant.auth)
+      .send({
+        accounting_book_id: fx.accountingBookId,
+        vendor_id: fx.vendorId,
+        purchase_order_id: order.body.id,
+        vendor_invoice_number: 'GRNI-CLEAR-1',
+        document_date: MAR,
+        posting_date: MAR,
+        lines: [
+          {
+            description: 'Stock widgets',
+            quantity: '10',
+            unit_price: '10.00',
+            destination_account_id: destinationId,
+            purchase_order_line_id: orderLineId,
+            goods_receipt_line_id: receiptLineId,
+          },
+        ],
+      })
+      .expect(201);
+
+    const match = await http()
+      .post(`/vendor-bills/${bill.body.id}/match`)
+      .set(tenant.auth)
+      .set(key('match-grni'))
+      .send({})
+      .expect(200);
+    expect(match.body.match_state).toBe('MATCHED');
+
+    await http()
+      .post(`/vendor-bills/${bill.body.id}/post`)
+      .set(tenant.auth)
+      .set(key('post-bill-grni'))
+      .send({})
+      .expect(200);
+
+    // (a) The destination still carries the delivery exactly once. The defect
+    // this proves absent debited it at receipt AND at billing: 200, not 100.
+    expect(await accountBalance(tenant, fx, destinationId)).toBeCloseTo(100, 6);
+
+    // (b) GRNI is empty again: the bill took out exactly the credit the
+    // receipt put in. Under the defect it stayed at -100 for this delivery and
+    // would have grown by every received-then-billed line forever.
+    expect(await accountBalance(tenant, fx, fx.accounts.grni)).toBeCloseTo(0, 6);
+  }, 180_000);
+});

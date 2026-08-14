@@ -596,16 +596,36 @@ async function runGuardSuite(baseConnectionString: string): Promise<number> {
     await admin.end();
   }
 
-  const asserted = scenarios.filter((s) => s.label && s.expectation !== 'INFORMATIONAL').length;
+  const labelled = scenarios.filter((s) => s.label);
+  const asserted = labelled.filter((s) => s.expectation !== 'INFORMATIONAL');
+
+  // A labelled scenario that declares no expectation runs and cannot fail. T15
+  // sat like that from Phase 2 until Phase 5 — a bare SELECT whose output nobody
+  // compared to anything — and it was only visible as the difference between 117
+  // labels in the file and 116 in this count. The whole point of declaring the
+  // expectation in the label is that the suite and its pass criteria cannot
+  // drift apart, so a label that declares nothing is a hole in that, not an
+  // exemption from it.
+  const inert = labelled.filter((s) => s.expectation === 'INFORMATIONAL');
+  if (inert.length > 0) {
+    console.error('');
+    console.error(
+      `${c.red}${c.bold}guard suite FAILED${c.reset}: ${inert.length} scenario(s) declare no expectation ` +
+        `and therefore cannot fail. End the label with "-> expect ACCEPT" or "-> expect REJECT via <GUARD>".`,
+    );
+    for (const s of inert) console.error(`  ${c.yellow}${s.label}${c.reset}`);
+    return 1;
+  }
+
   console.log('');
   if (failures > 0) {
     console.error(
-      `${c.red}${c.bold}guard suite FAILED${c.reset}: ${failures} of ${asserted} scenarios`,
+      `${c.red}${c.bold}guard suite FAILED${c.reset}: ${failures} of ${asserted.length} scenarios`,
     );
     return 1;
   }
   console.log(
-    `${c.green}${c.bold}guard suite passed${c.reset}: ${asserted} scenarios behaved as declared`,
+    `${c.green}${c.bold}guard suite passed${c.reset}: ${asserted.length} scenarios behaved as declared`,
   );
   return 0;
 }

@@ -292,6 +292,17 @@ const ROW = new RegExp(
 const DESCRIPTION_UPDATE =
   /UPDATE\s+permissions\s+SET\s+description\s*=\s*'((?:[^']|'')*)'\s*WHERE\s+code\s*=\s*'([a-z_]+\.[a-z_]+)'/gi;
 
+/**
+ * A later migration reclassifying a permission's risk (F-921).
+ *
+ * The accumulated seed has to describe the rows a fresh database would actually
+ * contain. Without this, a reclassification applied by migration is invisible to
+ * every check that reads these files, and the contract check reports drift that
+ * has in fact already been corrected — which trains people to ignore it.
+ */
+const RISK_UPDATE =
+  /UPDATE\s+permissions\s+SET\s+is_high_risk\s*=\s*(true|false)\s*,\s*requires_reauth\s*=\s*(true|false)\s*WHERE\s+code\s*=\s*'([a-z_]+\.[a-z_]+)'/gi;
+
 export function seededPermissions(): SeededPermission[] {
   const out: SeededPermission[] = [];
   for (const file of readdirSync(SCHEMA_DIR)
@@ -332,6 +343,21 @@ export function seededPermissions(): SeededPermission[] {
           ...out[index]!,
           description: u[1]!.replace(/''/g, "'"),
           migration: `${out[index]!.migration} (restated by ${file})`,
+        };
+      }
+    }
+
+    RISK_UPDATE.lastIndex = 0;
+    let r: RegExpExecArray | null;
+    while ((r = RISK_UPDATE.exec(sql)) !== null) {
+      const code = r[3]!;
+      const index = out.findIndex((p) => p.code === code);
+      if (index >= 0) {
+        out[index] = {
+          ...out[index]!,
+          isHighRisk: r[1] === 'true',
+          requiresReauth: r[2] === 'true',
+          migration: `${out[index]!.migration} (reclassified by ${file})`,
         };
       }
     }

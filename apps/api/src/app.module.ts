@@ -30,6 +30,14 @@ import { ApController } from './subledger/ap.controller';
 import { TaxController } from './subledger/tax.controller';
 import { FilesController } from './subledger/files.controller';
 import { SubledgerReportsController } from './subledger/reports.controller';
+import { BankingController } from './banking/banking.controller';
+import { BANKING_PROVIDERS } from './banking/banking.providers';
+import { InventoryController } from './inventory/inventory.controller';
+import { INVENTORY_PROVIDERS } from './inventory/inventory.providers';
+import { AssetsController } from './assets/assets.controller';
+import { ASSETS_PROVIDERS } from './assets/assets.providers';
+import { ProjectsController } from './projects/projects.controller';
+import { PROJECTS_PROVIDERS } from './projects/projects.providers';
 import { SUBLEDGER_PROVIDERS } from './subledger/subledger.providers';
 
 /**
@@ -63,6 +71,10 @@ import { SUBLEDGER_PROVIDERS } from './subledger/subledger.providers';
     TaxController,
     FilesController,
     SubledgerReportsController,
+    BankingController,
+    InventoryController,
+    AssetsController,
+    ProjectsController,
     PlatformController,
     AuditController,
   ],
@@ -75,6 +87,13 @@ import { SUBLEDGER_PROVIDERS } from './subledger/subledger.providers';
     FinanceSetupService,
     ...LEDGER_PROVIDERS,
     ...SUBLEDGER_PROVIDERS,
+    ...BANKING_PROVIDERS,
+    ...INVENTORY_PROVIDERS,
+    ...ASSETS_PROVIDERS,
+    // After SUBLEDGER_PROVIDERS: ProjectsService injects ArService to raise a
+    // billing proposal's invoice as a DRAFT. Nest resolves by token rather than
+    // by array order, but the ordering keeps the dependency legible.
+    ...PROJECTS_PROVIDERS,
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
     { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },

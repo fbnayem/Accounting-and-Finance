@@ -206,7 +206,14 @@ export type AccountKey =
   | 'customerAdvance'
   | 'vendorAdvance'
   | 'fxGain'
-  | 'fxLoss';
+  | 'fxLoss'
+  // Phase 4. A transfer needs two bank accounts, and processor clearing needs a
+  // clearing account distinct from the bank — mapping it at the bank account
+  // would make the settlement journal debit and credit the same account, and
+  // "the clearing account clears exactly" would then be true of nothing.
+  | 'bank2'
+  | 'paymentClearing'
+  | 'processingFee';
 
 const CHART: readonly {
   key: AccountKey;
@@ -236,6 +243,9 @@ const CHART: readonly {
   { key: 'vendorAdvance', code: '1300', name: 'Vendor advances', type: 'ASSET' },
   { key: 'fxGain', code: '4900', name: 'Realized FX gain', type: 'REVENUE' },
   { key: 'fxLoss', code: '6900', name: 'Realized FX loss', type: 'EXPENSE' },
+  { key: 'bank2', code: '1020', name: 'Bank - savings', type: 'ASSET' },
+  { key: 'paymentClearing', code: '1150', name: 'Payment clearing', type: 'ASSET' },
+  { key: 'processingFee', code: '6200', name: 'Payment processing fees', type: 'EXPENSE' },
 ];
 
 /**
@@ -310,7 +320,7 @@ export async function createLedger(
       // resolves to nothing fails as a missing-mapping error naming the column,
       // instead of as a journal that quietly omits a line.
       ap_control_account_id: accounts.ap,
-      payment_clearing_account_id: accounts.bank,
+      payment_clearing_account_id: accounts.paymentClearing,
       bad_debt_account_id: accounts.badDebt,
       grni_account_id: accounts.grni,
       customer_advance_account_id: accounts.customerAdvance,

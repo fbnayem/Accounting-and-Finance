@@ -38,6 +38,14 @@ export interface Foundation {
   readonly organizationId: string;
   readonly userId: string;
   readonly entities: readonly SeededEntity[];
+  /**
+   * Journal lines already in this tenant — set only when resuming (F-812).
+   *
+   * Printed by the seeder so the tenant a `--only` run chose is visible in its
+   * output. The whole failure this guards against was invisible because every
+   * number the resumed run printed was about rows it had just written.
+   */
+  readonly ledgerLines?: number;
 }
 
 export async function seedCurrencies(client: PoolClient): Promise<void> {
@@ -63,27 +71,51 @@ export async function seedCurrencies(client: PoolClient): Promise<void> {
  * destroy the volumes and regenerate everything, which is a heavy price for
  * adding 4,000 rows. This reads what is already there instead.
  *
- * The most recently created tenant wins, which is the one the last full seed
- * wrote. `accounts` comes back empty: only the ledger seeder needs it, and the
- * ledger stage cannot be resumed anyway.
+ * **The tenant with the largest ledger wins, not the most recent one (F-812).**
+ * Recency was the original rule and it is wrong in the one case that matters: a
+ * database can hold more than one seeded tenant — a full seed that failed after
+ * the foundation commit leaves a complete chart of accounts and no ledger behind
+ * it — and `resolveBenchScope` chooses the entity with the most journal lines.
+ * When the two rules disagree, `--only` seeds a stage onto an entity the
+ * benchmark never looks at, and every symptom of that is a silent zero: the
+ * stage reports the rows it wrote, the benchmark reports a very fast query, and
+ * nothing connects them. Measured here: 5,000 bank transactions written to a
+ * husk tenant created six days after the one holding all 20,000 journal lines
+ * and 2,000 invoices. Choosing by ledger size makes the seeder and the benchmark
+ * agree by construction.
+ *
+ * `accounts` comes back empty: only the ledger seeder needs it, and the ledger
+ * stage cannot be resumed anyway.
  */
 export async function loadFoundation(client: PoolClient): Promise<Foundation> {
   const { rows: roots } = await client.query<{
     tenant_id: string;
     organization_id: string;
     user_id: string;
+    lines: string;
   }>(
     `SELECT o.tenant_id, o.id AS organization_id,
             (SELECT id FROM users WHERE email LIKE 'seed-%@example.test'
-              ORDER BY created_at DESC LIMIT 1) AS user_id
+              ORDER BY created_at DESC LIMIT 1) AS user_id,
+            (SELECT count(*) FROM journal_lines l WHERE l.tenant_id = t.id)::text AS lines
        FROM organizations o
        JOIN tenants t ON t.id = o.tenant_id
       WHERE t.slug LIKE 'seed-%'
-      ORDER BY t.created_at DESC
+      -- Ledger size first, recency only to break a tie. The benchmark's scope
+      -- resolver ranks by exactly this, and the two must not diverge.
+      ORDER BY (SELECT count(*) FROM journal_lines l WHERE l.tenant_id = t.id) DESC,
+               t.created_at DESC
       LIMIT 1`,
   );
   const root = roots[0];
   if (!root) throw new Error('no seeded tenant found — run a full `pnpm db:seed` first');
+  if (Number(root.lines) === 0) {
+    // Not a warning. Every stage that resumes onto an empty ledger produces rows
+    // no workload will ever read, and reports success while doing it.
+    throw new Error(
+      'the seeded tenants all have an empty ledger — run a full `pnpm db:seed` before resuming a stage',
+    );
+  }
 
   const { rows: entityRows } = await client.query<{
     id: string;
@@ -142,6 +174,7 @@ export async function loadFoundation(client: PoolClient): Promise<Foundation> {
     organizationId: root.organization_id,
     userId: root.user_id,
     entities,
+    ledgerLines: Number(root.lines),
   };
 }
 

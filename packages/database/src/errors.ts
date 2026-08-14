@@ -52,6 +52,22 @@ const GUARD_PREFIXES: ReadonlyArray<readonly [string, ErrorCode]> = [
   ['CROSS_ENTITY_REFERENCE:', 'CROSS_ENTITY_REFERENCE'],
   ['INSUFFICIENT_STOCK:', 'INSUFFICIENT_STOCK'],
   ['ROUNDING_IMBALANCE:', 'ROUNDING_IMBALANCE'],
+  // Phase 4 banking (F-809). Two of these — OVER_MATCH and RECONCILIATION_LOCKED
+  // — have raised correctly since Deliverable 2's 0011 and were never mapped, so
+  // a working control reported itself as "an unexpected error occurred". doc 15
+  // forbids leaking internals, and this list is what keeps a guard's refusal
+  // actionable rather than merely loud.
+  ['OVER_MATCH:', 'OVER_ALLOCATION'],
+  ['RECONCILIATION_LOCKED:', 'POSTED_IMMUTABLE'],
+  ['RECONCILIATION_UNBALANCED:', 'VALIDATION_FAILED'],
+  ['SPLIT_UNBALANCED:', 'VALIDATION_FAILED'],
+  ['SPLIT_PARENT_NOT_MATCHABLE:', 'VALIDATION_FAILED'],
+  // Phase 5 (0043). BUDGET_IMMUTABLE is the same shape as POSTED_IMMUTABLE — an
+  // approved amount is corrected by revising to a new version, never by an edit
+  // — and the caller's remedy is identical, so it maps to the same code rather
+  // than earning one the contract would have to grow for it.
+  ['BUDGET_IMMUTABLE:', 'POSTED_IMMUTABLE'],
+  ['TRANSFER_UNBALANCED:', 'VALIDATION_FAILED'],
 ];
 
 const SQLSTATE: Readonly<Record<string, ErrorCode>> = {

@@ -31,15 +31,16 @@ privileges Gate C requires be revoked. Pointing both at the same role is rejecte
 
 ```
 apps/
-  api        NestJS. Contract-driven auth, permissions and idempotency; the Phase 1–3 domain.
+  api        NestJS. Contract-driven auth, permissions and idempotency; the Phase 1–4 domain.
   worker     Outbox drainer, idempotent event consumer, scheduled reversals and recurring journals.
-  web        Next.js. Administration screens, the journal grid, ledger and subledger reports.
+  web        Next.js. Administration screens, the journal grid, ledger, subledger and banking.
 packages/
   config     Typed environment validation. Fails at boot, not at first use.
   domain     Decimal money, the rounding chain, the posting engine, the posting-rule language.
   database   Pool, transactions and lock ordering, migrator, outbox, idempotency, audit.
   ledger     The accounting kernel. Framework-free, so the API and the worker post the same way.
   subledger  AR, AP, tax, sales, procurement and documents. Posts through ledger, never into it.
+  banking    Feed import, matching, reconciliation, treasury. Consumes AR/AP; never settles a document itself.
   contracts  Generated from contracts/*.yaml, plus the drift gate.
   testing    Seed profiles and the benchmark harness.
   ui         Design tokens, WCAG 2.2 AA contrast enforcement, money formatting.
@@ -52,7 +53,7 @@ Three directories, in order of authority. Where they disagree, the earlier one w
 finding explains why.
 
 **[contracts/](contracts/)** — the single source of truth for schema, events and API.
-38 migrations · 246 tables · 177 events · 303 operations · 218 permissions. Supersedes the
+41 migrations · 246 tables · 177 events · 312 operations · 220 permissions. Supersedes the
 blueprints in the handoff package.
 
 **[docs/adr/](docs/adr/)** — ten ratified decisions. The ones that change day-to-day code:
@@ -112,5 +113,6 @@ Not conventions — each of these fails a build.
 | **Phase 1** — tenant, IAM, finance setup                 | **complete** · [evidence](docs/PHASE_1.md)                                              |
 | **Phase 2** — accounting kernel and general ledger       | **complete** · [evidence](docs/PHASE_2.md)                                              |
 | **Phase 3** — customers, vendors, AR, AP, tax, documents | **complete** · [evidence](docs/PHASE_3.md)                                              |
-| Phase 4 — banking, cash management, reconciliation       | next                                                                                    |
-| Phases 4–11                                              | per [21_Phased_Implementation_Plan.md](<project plan/21_Phased_Implementation_Plan.md>) |
+| **Phase 4** — banking, cash, clearing and reconciliation | **complete** · [evidence](docs/PHASE_4.md)                                              |
+| Phase 5 — inventory, fixed assets, projects, budgets     | next                                                                                    |
+| Phases 5–11                                              | per [21_Phased_Implementation_Plan.md](<project plan/21_Phased_Implementation_Plan.md>) |
