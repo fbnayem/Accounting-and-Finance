@@ -27,7 +27,7 @@ export const OPERATION_METADATA = 'acct:operation';
  * ever disagreed, the boot check could demand a handler the test never covers, or
  * the test could quietly stop covering a phase the API still serves.
  */
-export const DELIVERED_PHASES = [0, 1, 2, 3, 4, 5] as const;
+export const DELIVERED_PHASES = [0, 1, 2, 3, 4, 5, 6] as const;
 
 /**
  * The status code comes from the contract too. `OPERATIONS` is a compile-time

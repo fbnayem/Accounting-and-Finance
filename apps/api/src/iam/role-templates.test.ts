@@ -5,6 +5,7 @@ import {
   SEGREGATION_SENSITIVE,
   permissionsFor,
   templateByCode,
+  tierOf,
   unclassifiedActions,
   unclassifiedResources,
 } from './role-templates';
@@ -93,9 +94,23 @@ describe('role templates', () => {
   it('keeps the read-only roles read-only', () => {
     for (const code of ['viewer', 'auditor']) {
       const held = permissionsFor(templateByCode(code)!);
-      const writes = held.filter(
-        (p) => !p.endsWith('.view') && p !== 'report.export' && p !== 'audit.view',
-      );
+      // Checked by TIER, not by the name ending in `.view`.
+      //
+      // The name was standing in for the property, and Phase 6 found the gap: an
+      // auditor must be able to drill from a reported amount to the journal lines
+      // behind it — doc 21 lists "journal/source tracing" in the auditor workspace
+      // — and `financial_statement.drill_down` is a read that no naming rule based
+      // on `.view` can recognise. Reading the tier asks the question the test
+      // actually means, and it is STRICTER in the direction that matters: a
+      // mutation named `report.snapshot` would slip past an `endsWith('.view')`
+      // check and is caught here.
+      //
+      // `report.export` is ADMINISTER and the Auditor holds it by explicit grant —
+      // doc 02 makes it the one read-only role that may export, because that is
+      // what an audit is — so it stays a named exception rather than being
+      // reclassified to fit.
+      const READ_ONLY_EXCEPTIONS = new Set(['report.export', 'audit.view']);
+      const writes = held.filter((p) => !READ_ONLY_EXCEPTIONS.has(p) && tierOf(p) !== 'VIEW');
       expect(writes, `${code} can ${writes.join(', ')}`).toEqual([]);
     }
   });

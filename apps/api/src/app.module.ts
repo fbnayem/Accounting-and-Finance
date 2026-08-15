@@ -37,6 +37,12 @@ import { INVENTORY_PROVIDERS } from './inventory/inventory.providers';
 import { AssetsController } from './assets/assets.controller';
 import { ASSETS_PROVIDERS } from './assets/assets.providers';
 import { ProjectsController } from './projects/projects.controller';
+import { ReportingController } from './reporting/reporting.controller';
+import { REPORTING_PROVIDERS } from './reporting/reporting.providers';
+import { ApprovalsController } from './approvals/approvals.controller';
+import { APPROVALS_PROVIDERS } from './approvals/approvals.providers';
+import { CloseController } from './close/close.controller';
+import { CLOSE_PROVIDERS } from './close/close.providers';
 import { PROJECTS_PROVIDERS } from './projects/projects.providers';
 import { SUBLEDGER_PROVIDERS } from './subledger/subledger.providers';
 
@@ -75,6 +81,9 @@ import { SUBLEDGER_PROVIDERS } from './subledger/subledger.providers';
     InventoryController,
     AssetsController,
     ProjectsController,
+    ReportingController,
+    ApprovalsController,
+    CloseController,
     PlatformController,
     AuditController,
   ],
@@ -94,6 +103,9 @@ import { SUBLEDGER_PROVIDERS } from './subledger/subledger.providers';
     // billing proposal's invoice as a DRAFT. Nest resolves by token rather than
     // by array order, but the ordering keeps the dependency legible.
     ...PROJECTS_PROVIDERS,
+    ...REPORTING_PROVIDERS,
+    ...APPROVALS_PROVIDERS,
+    ...CLOSE_PROVIDERS,
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
     { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },

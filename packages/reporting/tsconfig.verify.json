@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@acct/domain": ["verify/domain.ts"]
+    }
+  },
+  "include": ["src/**/*", "verify/**/*"]
+}

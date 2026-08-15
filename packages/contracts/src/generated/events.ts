@@ -19,6 +19,7 @@ export interface EventDefinition {
 
 export const EVENT_TYPES = [
   'account_reconciliation.certified',
+  'account_reconciliation.reopened',
   'account.created',
   'account.updated',
   'accounting_period.hard_closed',
@@ -71,6 +72,7 @@ export const EVENT_TYPES = [
   'budget.revised',
   'budget.superseded',
   'budget.threshold_exceeded',
+  'close.reopened',
   'close.started',
   'close.task_completed',
   'consolidation.completed',
@@ -138,6 +140,8 @@ export const EVENT_TYPES = [
   'notification.sent',
   'organization.created',
   'payment_run.approved',
+  'period_end_entry.created',
+  'period_end_entry.recognized',
   'period.close_ready',
   'period.closed',
   'permission.changed',
@@ -201,6 +205,7 @@ export type EventType = (typeof EVENT_TYPES)[number];
 
 export const EVENT_DEFINITIONS: Readonly<Record<EventType, EventDefinition>> = {
   'account_reconciliation.certified': { type: 'account_reconciliation.certified', context: 'close_reporting', scope: 'book', phase: 6, status: 'new' },
+  'account_reconciliation.reopened': { type: 'account_reconciliation.reopened', context: 'close_reporting', scope: 'book', phase: 6, status: 'new' },
   'account.created': { type: 'account.created', context: 'ledger', scope: 'book', phase: 2, status: 'stable' },
   'account.updated': { type: 'account.updated', context: 'ledger', scope: 'book', phase: 2, status: 'stable' },
   'accounting_period.hard_closed': { type: 'accounting_period.hard_closed', context: 'platform', scope: 'platform', phase: 1, status: 'renamed', was: 'accounting_period.closed' },
@@ -253,6 +258,7 @@ export const EVENT_DEFINITIONS: Readonly<Record<EventType, EventDefinition>> = {
   'budget.revised': { type: 'budget.revised', context: 'projects_budgets', scope: 'entity', phase: 5, status: 'stable' },
   'budget.superseded': { type: 'budget.superseded', context: 'projects_budgets', scope: 'entity', phase: 5, status: 'new' },
   'budget.threshold_exceeded': { type: 'budget.threshold_exceeded', context: 'projects_budgets', scope: 'entity', phase: 5, status: 'new' },
+  'close.reopened': { type: 'close.reopened', context: 'close_reporting', scope: 'book', phase: 6, status: 'new' },
   'close.started': { type: 'close.started', context: 'close_reporting', scope: 'book', phase: 6, status: 'stable' },
   'close.task_completed': { type: 'close.task_completed', context: 'close_reporting', scope: 'book', phase: 6, status: 'renamed', was: 'close_task.completed' },
   'consolidation.completed': { type: 'consolidation.completed', context: 'multi_entity', scope: 'entity', phase: 7, status: 'stable' },
@@ -320,6 +326,8 @@ export const EVENT_DEFINITIONS: Readonly<Record<EventType, EventDefinition>> = {
   'notification.sent': { type: 'notification.sent', context: 'notifications', scope: 'platform', phase: 1, status: 'new' },
   'organization.created': { type: 'organization.created', context: 'platform', scope: 'platform', phase: 1, status: 'stable' },
   'payment_run.approved': { type: 'payment_run.approved', context: 'purchasing_ap', scope: 'book', phase: 3, status: 'new' },
+  'period_end_entry.created': { type: 'period_end_entry.created', context: 'close_reporting', scope: 'book', phase: 6, status: 'new' },
+  'period_end_entry.recognized': { type: 'period_end_entry.recognized', context: 'close_reporting', scope: 'book', phase: 6, status: 'new' },
   'period.close_ready': { type: 'period.close_ready', context: 'close_reporting', scope: 'book', phase: 6, status: 'stable' },
   'period.closed': { type: 'period.closed', context: 'close_reporting', scope: 'book', phase: 6, status: 'stable' },
   'permission.changed': { type: 'permission.changed', context: 'platform', scope: 'platform', phase: 1, status: 'stable' },

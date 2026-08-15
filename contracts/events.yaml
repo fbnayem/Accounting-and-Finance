@@ -243,8 +243,12 @@ contexts:
     events:
       close.started:                        {}
       close.task_completed:                 {status: renamed, was: close_task.completed}
+      close.reopened:                       {status: new, note: "F-1002: doc 21's \"reopen workflow with privileged approval/audit\". Distinct from accounting_period.reopened - the period lock and the close run are separate facts, and F-038 makes a reopen a new close version rather than an edit, so this carries the version it created and the reason"}
+      period_end_entry.created:             {status: new, note: "F-1004: doc 21 close management, \"accrual/prepaid/deferred entries\". The accrual's reversal is journal.reversed from the scheduled-reversal worker (F-612), not a second event on this aggregate"}
+      period_end_entry.recognized:          {status: new, note: "F-1004: one period's PREPAID_AMORTIZATION or REVENUE_RECOGNIZED release. Emitted per entry and period, so a rerun that posts nothing emits nothing"}
       reconciliation.completed:             {}
       account_reconciliation.certified:     {status: new, note: "preparer/approver certification - Gate D artifact"}
+      account_reconciliation.reopened:      {status: new, note: "F-1001: doc 12 - \"approved reconciliation is immutable unless formally reopened with reason\". Withdrawing a certification is a fact the close dashboard and the auditor both read; without it a Gate D artifact could be un-certified silently"}
       financial_snapshot.created:           {}
       financial_statements.approved:        {status: new, note: "gates the immutable snapshot"}
       report.generated:                     {status: new, note: "doc 12 export/report audit logging"}

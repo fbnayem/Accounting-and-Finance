@@ -1697,3 +1697,672 @@ UPDATE invoices SET status = 'POSTED' WHERE id = '96000000-0000-0000-0000-000000
 
 \echo '### T160 0049  a PARTIALLY_PAID invoice with no number -> expect REJECT via invoices_posted_has_number'
 UPDATE invoices SET status = 'PARTIALLY_PAID' WHERE id = '96000000-0000-0000-0000-000000000001';
+
+-- ============================================================================
+-- Phase 6 statement presentation (0053). Three things the Phase 6 exit criterion
+-- "core statements tie exactly to Trial Balance" rests on, and none of which had
+-- a scenario before this block:
+--
+--   * a reporting window the two trial-balance sources cannot read differently;
+--   * an account-to-statement-line mapping, and the detection of an account that
+--     has none;
+--   * a cash flow statement with a declared method, a complete classification, a
+--     cash marker and a controlled override.
+--
+-- Every REJECT below has its ACCEPT beside it, and the two detections (T162,
+-- T167) assert what they FOUND rather than that they ran — a coverage query that
+-- returns nothing reads exactly like a chart with no gaps.
+-- ============================================================================
+
+\echo '### T161 fixture  entity three, a four-month calendar with a MID-YEAR adjustment period, and five postings -> expect ACCEPT'
+-- Its own scenario for T135''s reason: a fixture inside a rejected block is rolled
+-- back and everything after it asserts against nothing.
+--
+-- A separate entity, deliberately. Entity one has accumulated accounts from T16
+-- onwards, so a coverage assertion against it would measure the history of this
+-- file rather than the control. Entity three has six posting accounts and nothing
+-- else will add to it.
+--
+-- The calendar is the shape 0004 permits and the seed happens never to produce:
+-- period 13 is an ADJUSTMENT period dated inside FEBRUARY. accounting_periods_no_overlap
+-- excludes adjustment periods by design (F-011), and the ledger orders periods by
+-- (fiscal year start, period_no) rather than by date — also by design, so an
+-- adjustment period''s opening balance does not depend on row order. Put together,
+-- a date window can select periods the ledger orders NON-contiguously, and that is
+-- the case T162 measures and T163 refuses.
+INSERT INTO legal_entities(id,tenant_id,organization_id,code,legal_name,country_code,functional_currency,timezone)
+  VALUES ('3e000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','22222222-2222-2222-2222-222222222222','E3','Entity Three','US','USD','UTC');
+INSERT INTO fiscal_years(id,tenant_id,legal_entity_id,name,start_date,end_date)
+  VALUES ('3f000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','FY26','2026-01-01','2026-12-31');
+INSERT INTO accounting_periods(id,tenant_id,legal_entity_id,fiscal_year_id,period_no,name,start_date,end_date,is_adjustment) VALUES
+  ('3a000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3f000000-0000-0000-0000-000000000001',1,'Jan-26','2026-01-01','2026-01-31',false),
+  ('3a000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3f000000-0000-0000-0000-000000000001',2,'Feb-26','2026-02-01','2026-02-28',false),
+  ('3a000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3f000000-0000-0000-0000-000000000001',3,'Mar-26','2026-03-01','2026-03-31',false),
+  ('3a000000-0000-0000-0000-000000000004','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3f000000-0000-0000-0000-000000000001',4,'Apr-26','2026-04-01','2026-04-30',false),
+  ('3a000000-0000-0000-0000-000000000005','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3f000000-0000-0000-0000-000000000001',13,'ADJ-FEB-26','2026-02-15','2026-02-15',true);
+INSERT INTO accounting_books(id,tenant_id,legal_entity_id,code,name,base_currency,is_primary)
+  VALUES ('3b000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','E3B','Entity three primary','USD',true);
+INSERT INTO journals(id,tenant_id,legal_entity_id,accounting_book_id,code,name,journal_type)
+  VALUES ('3c000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','GJ','General','GENERAL');
+INSERT INTO accounts(id,tenant_id,legal_entity_id,code,name,account_type,normal_balance) VALUES
+  ('3d000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','1000','Bank current account','ASSET','DEBIT'),
+  ('3d000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','4000','Sales','REVENUE','CREDIT'),
+  ('3d000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','5000','Rent expense','EXPENSE','DEBIT'),
+  ('3d000000-0000-0000-0000-000000000004','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','1500','Equipment','ASSET','DEBIT'),
+  ('3d000000-0000-0000-0000-000000000005','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3000','Share capital','EQUITY','CREDIT'),
+  ('3d000000-0000-0000-0000-000000000006','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','2000','Trade payables','LIABILITY','CREDIT'),
+  ('3d000000-0000-0000-0000-000000000007','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','9900','Intercompany suspense','EXPENSE','DEBIT');
+-- January: cash sale.        March: equipment bought for cash, and share capital paid in.
+-- April:   rent paid.        Adjustment period: an accrual that touches no cash at all.
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,entry_number,posting_date,source_type,base_currency,status,posted_at) VALUES
+  ('31000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3c000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000001','E3-1','2026-01-20','MANUAL','USD','POSTED',now()),
+  ('31000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3c000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000003','E3-2','2026-03-10','MANUAL','USD','POSTED',now()),
+  ('31000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3c000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000003','E3-3','2026-03-20','MANUAL','USD','POSTED',now()),
+  ('31000000-0000-0000-0000-000000000004','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3c000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','E3-4','2026-04-10','MANUAL','USD','POSTED',now()),
+  ('31000000-0000-0000-0000-000000000005','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3c000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000005','E3-5','2026-02-15','MANUAL','USD','POSTED',now());
+INSERT INTO journal_lines(id,tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_debit,transaction_credit,base_currency,base_debit,base_credit) VALUES
+  ('36000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','31000000-0000-0000-0000-000000000001','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000001','2026-01-20',1,'3d000000-0000-0000-0000-000000000001','USD',1000,0,'USD',1000,0),
+  ('36000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','31000000-0000-0000-0000-000000000001','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000001','2026-01-20',2,'3d000000-0000-0000-0000-000000000002','USD',0,1000,'USD',0,1000),
+  ('36000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','31000000-0000-0000-0000-000000000002','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000003','2026-03-10',1,'3d000000-0000-0000-0000-000000000004','USD',500,0,'USD',500,0),
+  ('36000000-0000-0000-0000-000000000004','11111111-1111-1111-1111-111111111111','31000000-0000-0000-0000-000000000002','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000003','2026-03-10',2,'3d000000-0000-0000-0000-000000000001','USD',0,500,'USD',0,500),
+  ('36000000-0000-0000-0000-000000000005','11111111-1111-1111-1111-111111111111','31000000-0000-0000-0000-000000000003','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000003','2026-03-20',1,'3d000000-0000-0000-0000-000000000001','USD',2000,0,'USD',2000,0),
+  ('36000000-0000-0000-0000-000000000006','11111111-1111-1111-1111-111111111111','31000000-0000-0000-0000-000000000003','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000003','2026-03-20',2,'3d000000-0000-0000-0000-000000000005','USD',0,2000,'USD',0,2000),
+  ('36000000-0000-0000-0000-000000000007','11111111-1111-1111-1111-111111111111','31000000-0000-0000-0000-000000000004','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','2026-04-10',1,'3d000000-0000-0000-0000-000000000003','USD',300,0,'USD',300,0),
+  ('36000000-0000-0000-0000-000000000008','11111111-1111-1111-1111-111111111111','31000000-0000-0000-0000-000000000004','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','2026-04-10',2,'3d000000-0000-0000-0000-000000000001','USD',0,300,'USD',0,300),
+  ('36000000-0000-0000-0000-000000000009','11111111-1111-1111-1111-111111111111','31000000-0000-0000-0000-000000000005','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000005','2026-02-15',1,'3d000000-0000-0000-0000-000000000003','USD',100,0,'USD',100,0),
+  ('3600000a-0000-0000-0000-000000000010','11111111-1111-1111-1111-111111111111','31000000-0000-0000-0000-000000000005','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000005','2026-02-15',2,'3d000000-0000-0000-0000-000000000006','USD',0,100,'USD',0,100);
+
+\echo '### T162 S1-C  the two trial-balance window forms select DIFFERENT periods on this calendar -> expect ACCEPT'
+-- The measurement that makes T163 worth having. `trialBalanceFromProjection`
+-- filters by the SET of period ids the date window selected; `trialBalanceFromLines`
+-- filters by the ordinal RANGE [first, first + count - 1]. Both are reproduced here
+-- verbatim, and this scenario fails if they agree — because a refusal that guards
+-- an unreachable case is the "gate that reports success about something it never
+-- measured" this file exists to prevent.
+DO $$
+DECLARE
+  v_set   uuid[];
+  v_range uuid[];
+  v_first integer;
+  v_count integer;
+BEGIN
+  SELECT array_agg(x.id ORDER BY x.ordinal), min(x.ordinal), count(*)::integer
+    INTO v_set, v_first, v_count
+    FROM (SELECT p.id, p.start_date, p.end_date,
+                 row_number() OVER (ORDER BY fy.start_date, p.period_no)::integer AS ordinal
+            FROM accounting_periods p
+            JOIN fiscal_years fy ON fy.id = p.fiscal_year_id
+           WHERE p.legal_entity_id = '3e000000-0000-0000-0000-000000000001') x
+   WHERE x.end_date >= DATE '2026-01-01' AND x.start_date <= DATE '2026-02-28';
+
+  SELECT array_agg(x.id ORDER BY x.ordinal) INTO v_range
+    FROM (SELECT p.id,
+                 row_number() OVER (ORDER BY fy.start_date, p.period_no)::integer AS ordinal
+            FROM accounting_periods p
+            JOIN fiscal_years fy ON fy.id = p.fiscal_year_id
+           WHERE p.legal_entity_id = '3e000000-0000-0000-0000-000000000001') x
+   WHERE x.ordinal >= v_first AND x.ordinal <= v_first + v_count - 1;
+
+  IF v_set IS NULL OR v_range IS NULL THEN
+    RAISE EXCEPTION 'S1-C: the entity three calendar is missing; neither window form selected anything';
+  END IF;
+  IF v_set = v_range THEN
+    RAISE EXCEPTION
+      'S1-C: the id-set form and the ordinal-range form selected the SAME periods, so T163 refuses a '
+      'case this fixture can no longer reach. Restore an adjustment period the ledger orders after a '
+      'period the window excludes, or T163 proves nothing.';
+  END IF;
+  -- Named, so the difference is the one this is about rather than any difference.
+  IF NOT ('3a000000-0000-0000-0000-000000000005' = ANY (v_set)) THEN
+    RAISE EXCEPTION 'S1-C: the February adjustment period is not in the date-selected set';
+  END IF;
+  IF NOT ('3a000000-0000-0000-0000-000000000003' = ANY (v_range)) THEN
+    RAISE EXCEPTION 'S1-C: March is not in the ordinal range, so the two forms differ for another reason';
+  END IF;
+  IF '3a000000-0000-0000-0000-000000000003' = ANY (v_set) THEN
+    RAISE EXCEPTION 'S1-C: March IS in the date-selected set; the window no longer excludes it';
+  END IF;
+END $$;
+
+\echo '### T163 S1-C  a January-February window over that calendar -> expect REJECT via REPORT_WINDOW_DISCONTIGUOUS'
+-- The dates select January, February and the February adjustment period, and the
+-- ledger orders March and April between the second and the third. Opening balance,
+-- movement and closing balance have no consistent meaning over that set — for
+-- EITHER source — so it is refused rather than answered two different ways.
+SELECT count(*) FROM report_period_window('3e000000-0000-0000-0000-000000000001','2026-01-01','2026-02-28');
+
+\echo '### T164 S1-C  a February-April window, which the ledger orders contiguously -> expect ACCEPT'
+-- The half that separates a window validator from one that refuses every report.
+DO $$
+DECLARE
+  v_ids   uuid[];
+  v_first integer;
+  v_last  integer;
+  v_from  date;
+  v_to    date;
+  v_in    integer;
+BEGIN
+  SELECT b.period_ids, b.first_ordinal, b.last_ordinal, b.period_from, b.period_to
+    INTO v_ids, v_first, v_last, v_from, v_to
+    FROM report_period_window_bounds('3e000000-0000-0000-0000-000000000001','2026-02-01','2026-04-30') b;
+
+  IF v_ids IS NULL THEN
+    RAISE EXCEPTION 'S1-C: the validated window returned no periods at all';
+  END IF;
+  IF cardinality(v_ids) <> 4 OR v_first <> 2 OR v_last <> 5 THEN
+    RAISE EXCEPTION
+      'S1-C: expected 4 periods spanning ordinals 2..5 (February, March, April and the February '
+      'adjustment period); got % periods spanning %..%', cardinality(v_ids), v_first, v_last;
+  END IF;
+  -- The id set and the ordinal bounds come from ONE call, which is the whole
+  -- claim: cardinality and span cannot disagree because nothing computed them twice.
+  IF cardinality(v_ids) <> v_last - v_first + 1 THEN
+    RAISE EXCEPTION 'S1-C: the id set and the ordinal span disagree, which is the defect this closes';
+  END IF;
+  IF v_from <> DATE '2026-02-01' OR v_to <> DATE '2026-04-30' THEN
+    RAISE EXCEPTION 'S1-C: the window reported dates % to %, not the periods it selected', v_from, v_to;
+  END IF;
+
+  SELECT count(*)::integer INTO v_in
+    FROM report_period_window('3e000000-0000-0000-0000-000000000001','2026-02-01','2026-04-30') w
+   WHERE w.in_window;
+  IF v_in <> 4 THEN
+    RAISE EXCEPTION 'S1-C: report_period_window flagged % periods in window, bounds said 4', v_in;
+  END IF;
+END $$;
+
+\echo '### T165 S1-C  the set form and the range form agree, per account, over a validated window -> expect ACCEPT'
+-- What "agree by construction" has to mean to be worth anything: over a window
+-- report_period_window() accepts, the two filters produce identical figures for
+-- every account — and the trial balance identity opening + movement = closing
+-- holds for every account as well. Both are computed from journal_lines with no
+-- projection involved, so this scenario would fail if a later change let a
+-- discontiguous window through instead of refusing it.
+DO $$
+DECLARE
+  v_first    integer;
+  v_last     integer;
+  v_ids      uuid[];
+  v_bad      text;
+  v_compared integer;
+  v_open     numeric;
+  v_move     numeric;
+BEGIN
+  SELECT b.period_ids, b.first_ordinal, b.last_ordinal INTO v_ids, v_first, v_last
+    FROM report_period_window_bounds('3e000000-0000-0000-0000-000000000001','2026-02-01','2026-04-30') b;
+
+  SELECT string_agg(t.code || ' set=' || t.set_move || ' range=' || t.range_move, '; ')
+           FILTER (WHERE t.set_move <> t.range_move),
+         count(*)::integer
+    INTO v_bad, v_compared
+    FROM (
+      SELECT a.code,
+             coalesce(sum(l.base_debit - l.base_credit)
+                      FILTER (WHERE l.accounting_period_id = ANY (v_ids)), 0)          AS set_move,
+             coalesce(sum(l.base_debit - l.base_credit)
+                      FILTER (WHERE c.ordinal >= v_first AND c.ordinal <= v_last), 0)  AS range_move
+        FROM journal_lines l
+        JOIN journal_entries e ON e.id = l.journal_entry_id
+        JOIN accounts a ON a.id = l.account_id
+        JOIN report_period_calendar('3e000000-0000-0000-0000-000000000001','2026-02-01','2026-04-30') c
+          ON c.accounting_period_id = l.accounting_period_id
+       WHERE l.accounting_book_id = '3b000000-0000-0000-0000-000000000001'
+         AND e.status IN ('POSTED','REVERSED')
+       GROUP BY a.code
+    ) t;
+  IF coalesce(v_compared, 0) = 0 THEN
+    RAISE EXCEPTION
+      'S1-C: no account was compared at all, so "the two forms agree" is a statement about an empty '
+      'set — which is how a gate reports success about something it never measured';
+  END IF;
+  IF v_bad IS NOT NULL THEN
+    RAISE EXCEPTION 'S1-C: the two window forms disagree on a validated window: %', v_bad;
+  END IF;
+
+  -- The figures themselves, not only their agreement: the bank account MUST stand
+  -- at 1000 before the window and move 1200 inside it. Those are exactly the two
+  -- numbers a wrong `first_ordinal` changes, and IS DISTINCT FROM rather than <>
+  -- so a query that returns nothing fails instead of comparing NULL and passing.
+  SELECT coalesce(sum(l.base_debit - l.base_credit) FILTER (WHERE c.ordinal <  v_first), 0),
+         coalesce(sum(l.base_debit - l.base_credit)
+                  FILTER (WHERE c.ordinal >= v_first AND c.ordinal <= v_last), 0)
+    INTO v_open, v_move
+    FROM journal_lines l
+    JOIN journal_entries e ON e.id = l.journal_entry_id
+    JOIN accounts a ON a.id = l.account_id
+    JOIN report_period_calendar('3e000000-0000-0000-0000-000000000001','2026-02-01','2026-04-30') c
+      ON c.accounting_period_id = l.accounting_period_id
+   WHERE l.accounting_book_id = '3b000000-0000-0000-0000-000000000001'
+     AND e.status IN ('POSTED','REVERSED')
+     AND a.code = '1000';
+  IF v_open IS DISTINCT FROM 1000 OR v_move IS DISTINCT FROM 1200 THEN
+    RAISE EXCEPTION
+      'S1-C: the bank account should open at 1000 and move 1200 over February-April; got % and %',
+      coalesce(v_open::text, '(nothing)'), coalesce(v_move::text, '(nothing)');
+  END IF;
+END $$;
+
+\echo '### T166 fixture  a Balance Sheet and a Profit & Loss definition for entity three -> expect ACCEPT'
+INSERT INTO report_definitions(id,tenant_id,legal_entity_id,organization_id,code,name,report_type) VALUES
+  ('32000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','22222222-2222-2222-2222-222222222222','BS','Balance sheet','BALANCE_SHEET'),
+  ('32000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','22222222-2222-2222-2222-222222222222','PL','Profit and loss','PROFIT_LOSS');
+INSERT INTO report_rows(id,tenant_id,report_definition_id,row_no,label,row_type) VALUES
+  ('34000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001',1,'Assets','ACCOUNT_GROUP'),
+  ('34000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001',2,'Liabilities','ACCOUNT_GROUP'),
+  ('34000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001',3,'Equity','ACCOUNT_GROUP'),
+  ('34000000-0000-0000-0000-000000000004','11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000002',1,'Revenue','ACCOUNT_GROUP'),
+  ('34000000-0000-0000-0000-000000000005','11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000002',2,'Operating expenses','ACCOUNT_GROUP');
+
+\echo '### T167 S1-A  the coverage query NAMES the accounts that roll up to no line -> expect ACCEPT'
+-- Asserted by content, not by "it ran". An empty result is what a complete chart
+-- and a broken detection look like from the outside, and this file has been burned
+-- by that difference before (T15).
+DO $$
+DECLARE
+  v_missing text;
+  v_count   integer;
+  v_view    integer;
+BEGIN
+  SELECT string_agg(u.account_code, ',' ORDER BY u.account_code), count(*)::integer
+    INTO v_missing, v_count
+    FROM statement_unmapped_accounts('32000000-0000-0000-0000-000000000001') u;
+  IF coalesce(v_missing, '') <> '1000,1500,2000,3000' THEN
+    RAISE EXCEPTION
+      'S1-A: the balance-sheet coverage query should name all four unmapped balance-sheet accounts '
+      'of entity three; it named "%"', coalesce(v_missing, '(nothing)');
+  END IF;
+
+  -- The revenue and expense accounts must NOT appear on the balance sheet gap
+  -- list, or the detection is answering about the whole chart rather than about
+  -- the statement, and every definition would look equally broken.
+  IF v_count <> 4 THEN
+    RAISE EXCEPTION 'S1-A: expected 4 balance-sheet gaps, got %', v_count;
+  END IF;
+
+  SELECT count(*)::integer INTO v_view
+    FROM statement_coverage_gaps g
+   WHERE g.report_definition_id = '32000000-0000-0000-0000-000000000001'
+     AND g.gap = 'NO_STATEMENT_LINE';
+  IF v_view <> 4 THEN
+    RAISE EXCEPTION
+      'S1-A: statement_coverage_gaps reports % gap(s) for the balance sheet while the function '
+      'reports 4; the standing question and the callable one disagree', v_view;
+  END IF;
+END $$;
+
+\echo '### T168 S1-A  issuing a Balance Sheet while four accounts roll up to no line -> expect REJECT via STATEMENT_COVERAGE_INCOMPLETE'
+-- Exit criterion 1. Before this the snapshot was accepted, the statement balanced,
+-- and the four accounts were simply absent from it.
+INSERT INTO financial_snapshots(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,report_definition_id,snapshot_type,ledger_cutoff_at,payload,content_hash)
+SELECT '35000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','32000000-0000-0000-0000-000000000001','BALANCE_SHEET',now(),s.p,financial_snapshot_content_hash(s.p)
+  FROM (SELECT '{"rows":[]}'::jsonb AS p) s;
+
+\echo '### T169 S1-A  a mapping row that neither names a line nor says why -> expect REJECT via sam_line_xor_exclusion'
+INSERT INTO statement_account_mappings(tenant_id,report_definition_id,legal_entity_id,account_id)
+  VALUES ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000001');
+
+\echo '### T170 S1-A  a mapping row that claims both a line and an exclusion reason -> expect REJECT via sam_line_xor_exclusion'
+INSERT INTO statement_account_mappings(tenant_id,report_definition_id,legal_entity_id,account_id,report_row_id,exclusion_reason)
+  VALUES ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000001','34000000-0000-0000-0000-000000000001','presented elsewhere');
+
+\echo '### T171 S1-A  a mapping onto a line belonging to a DIFFERENT definition -> expect REJECT via sam_row_scope_fk'
+-- Without this the balance sheet could render a number under a line of the profit
+-- and loss, and both statements would still foot.
+INSERT INTO statement_account_mappings(tenant_id,report_definition_id,legal_entity_id,account_id,report_row_id)
+  VALUES ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000001','34000000-0000-0000-0000-000000000004');
+
+\echo '### T172 S1-A  a mapping of ANOTHER entity''s account onto an entity-scoped definition -> expect REJECT via CROSS_ENTITY_REFERENCE'
+INSERT INTO statement_account_mappings(tenant_id,report_definition_id,legal_entity_id,account_id,report_row_id)
+  VALUES ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001','33333333-3333-3333-3333-333333333333','a0000000-0000-0000-0000-000000000001','34000000-0000-0000-0000-000000000001');
+
+\echo '### T173 S1-A  every balance-sheet account given a line -> expect ACCEPT'
+INSERT INTO statement_account_mappings(tenant_id,report_definition_id,legal_entity_id,account_id,report_row_id) VALUES
+  ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000001','34000000-0000-0000-0000-000000000001'),
+  ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000004','34000000-0000-0000-0000-000000000001'),
+  ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000006','34000000-0000-0000-0000-000000000002'),
+  ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000005','34000000-0000-0000-0000-000000000003');
+
+\echo '### T174 S1-A  the same account mapped onto a second line -> expect REJECT via sam_account_uq'
+-- The double-count. Two overlapping code ranges did exactly this and the statement
+-- still balanced, because the account was counted twice on the same side.
+INSERT INTO statement_account_mappings(tenant_id,report_definition_id,legal_entity_id,account_id,report_row_id)
+  VALUES ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000001','34000000-0000-0000-0000-000000000002');
+
+\echo '### T175 S1-A  the same Balance Sheet snapshot once every account has a line -> expect ACCEPT'
+-- The half that keeps T168 from being satisfied by a schema that refuses every
+-- statement. Identical row, identical id — T168 rolled back in full.
+INSERT INTO financial_snapshots(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,report_definition_id,snapshot_type,ledger_cutoff_at,payload,content_hash)
+SELECT '35000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','32000000-0000-0000-0000-000000000001','BALANCE_SHEET',now(),s.p,financial_snapshot_content_hash(s.p)
+  FROM (SELECT '{"rows":[]}'::jsonb AS p) s;
+
+\echo '### T176 S1-A  a Profit & Loss whose suspense account is deliberately on no line, with the reason recorded -> expect ACCEPT'
+-- Coverage means every account has a DECISION, not that every account is on a
+-- line. The difference is that this one is answerable: the reason is stored beside
+-- the account rather than being the absence of a row.
+INSERT INTO statement_account_mappings(tenant_id,report_definition_id,legal_entity_id,account_id,report_row_id) VALUES
+  ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000002','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000002','34000000-0000-0000-0000-000000000004'),
+  ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000002','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000003','34000000-0000-0000-0000-000000000005');
+INSERT INTO statement_account_mappings(tenant_id,report_definition_id,legal_entity_id,account_id,exclusion_reason)
+  VALUES ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000002','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000007','Intercompany suspense clears to zero before issue; carried on no P&L line by policy.');
+INSERT INTO financial_snapshots(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,report_definition_id,snapshot_type,ledger_cutoff_at,payload,content_hash)
+SELECT '35000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','32000000-0000-0000-0000-000000000002','PROFIT_LOSS',now(),s.p,financial_snapshot_content_hash(s.p)
+  FROM (SELECT '{"rows":[]}'::jsonb AS p) s;
+
+\echo '### T177 S1-A  a Balance Sheet snapshot issued under the Profit & Loss definition -> expect REJECT via STATEMENT_COVERAGE_INCOMPLETE'
+-- The evasion the type constraint alone does not close: both definitions are fully
+-- mapped by now, so a snapshot could claim to be a balance sheet, be checked
+-- against the P&L''s coverage, and pass.
+INSERT INTO financial_snapshots(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,report_definition_id,snapshot_type,ledger_cutoff_at,payload,content_hash)
+SELECT '35000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','32000000-0000-0000-0000-000000000002','BALANCE_SHEET',now(),s.p,financial_snapshot_content_hash(s.p)
+  FROM (SELECT '{"rows":[]}'::jsonb AS p) s;
+
+\echo '### T178 S1-A  a core statement snapshot naming no report definition at all -> expect REJECT via STATEMENT_COVERAGE_INCOMPLETE'
+-- 0016 left report_definition_id nullable, which was the way past every check
+-- above: no definition, no lines, no mapping, nothing to be incomplete about.
+INSERT INTO financial_snapshots(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,snapshot_type,ledger_cutoff_at,payload,content_hash)
+SELECT '35000000-0000-0000-0000-000000000004','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','BALANCE_SHEET',now(),s.p,financial_snapshot_content_hash(s.p)
+  FROM (SELECT '{"rows":[]}'::jsonb AS p) s;
+
+\echo '### T179 S1-A  a Trial Balance snapshot, which presents no lines and needs no mapping -> expect ACCEPT'
+-- The other half of T178: the definition requirement applies to the three core
+-- statements doc 12 names and to nothing else, so a trial balance export is not
+-- collateral damage.
+INSERT INTO financial_snapshots(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,snapshot_type,ledger_cutoff_at,payload,content_hash)
+SELECT '35000000-0000-0000-0000-000000000005','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','TRIAL_BALANCE',now(),s.p,financial_snapshot_content_hash(s.p)
+  FROM (SELECT '{"rows":[]}'::jsonb AS p) s;
+
+\echo '### T180 S1-B  a cash flow definition that declares no method -> expect REJECT via rd_cash_flow_method_present'
+INSERT INTO report_definitions(id,tenant_id,legal_entity_id,organization_id,code,name,report_type)
+  VALUES ('32000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','22222222-2222-2222-2222-222222222222','CF','Cash flow','CASH_FLOW');
+
+\echo '### T181 S1-B  a Balance Sheet definition that claims a cash flow method -> expect REJECT via rd_cash_flow_method_present'
+-- Both directions of the same rule. A method on a statement that has none is how a
+-- constraint written only one way lets a definition claim a semantics nothing reads.
+INSERT INTO report_definitions(id,tenant_id,legal_entity_id,organization_id,code,name,report_type,cash_flow_method)
+  VALUES ('32000000-0000-0000-0000-000000000005','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','22222222-2222-2222-2222-222222222222','BS2','Balance sheet two','BALANCE_SHEET','DIRECT');
+
+\echo '### T182 S1-B  a DIRECT cash flow definition and an INDIRECT one -> expect ACCEPT'
+INSERT INTO report_definitions(id,tenant_id,legal_entity_id,organization_id,code,name,report_type,cash_flow_method) VALUES
+  ('32000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','22222222-2222-2222-2222-222222222222','CF','Cash flow (direct)','CASH_FLOW','DIRECT'),
+  ('32000000-0000-0000-0000-000000000004','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','22222222-2222-2222-2222-222222222222','CFI','Cash flow (indirect)','CASH_FLOW','INDIRECT');
+
+\echo '### T183 S1-B  issuing a cash flow while NO account is marked as cash -> expect REJECT via CASH_FLOW_NO_CASH_ACCOUNT'
+-- The empty-table gate. Without the marker "beginning cash + movement = ending
+-- cash" sums nothing on both sides, reports 0 = 0 and passes Gate E while
+-- describing no cash at all.
+INSERT INTO financial_snapshots(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,report_definition_id,snapshot_type,ledger_cutoff_at,payload,content_hash)
+SELECT '35000000-0000-0000-0000-000000000006','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','32000000-0000-0000-0000-000000000003','CASH_FLOW',now(),s.p,financial_snapshot_content_hash(s.p)
+  FROM (SELECT '{"rows":[]}'::jsonb AS p) s;
+
+\echo '### T184 S1-B  marking the bank account as cash -> expect ACCEPT'
+UPDATE accounts SET is_cash_equivalent = true WHERE id = '3d000000-0000-0000-0000-000000000001';
+
+\echo '### T185 S1-B  a revenue account marked as cash -> expect REJECT via accounts_cash_equivalent_is_asset'
+UPDATE accounts SET is_cash_equivalent = true WHERE id = '3d000000-0000-0000-0000-000000000002';
+
+\echo '### T186 S1-B  issuing a cash flow while six accounts carry no classification -> expect REJECT via CASH_FLOW_UNCLASSIFIED'
+-- Cash the statement cannot place is cash the statement does not report, and the
+-- three sections then do not add up to the movement. Refused rather than shown
+-- with a silent residual.
+INSERT INTO financial_snapshots(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,report_definition_id,snapshot_type,ledger_cutoff_at,payload,content_hash)
+SELECT '35000000-0000-0000-0000-000000000006','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','32000000-0000-0000-0000-000000000003','CASH_FLOW',now(),s.p,financial_snapshot_content_hash(s.p)
+  FROM (SELECT '{"rows":[]}'::jsonb AS p) s;
+
+\echo '### T187 S1-B  the detection names exactly the accounts with no classification -> expect ACCEPT'
+DO $$
+DECLARE v_codes text;
+BEGIN
+  SELECT string_agg(u.account_code, ',' ORDER BY u.account_code) INTO v_codes
+    FROM cash_flow_unclassified_accounts(ARRAY['3e000000-0000-0000-0000-000000000001'::uuid]) u;
+  -- 1000 is absent because it is now CASH: its own classification is never read,
+  -- so requiring one would be a control demanding a meaningless answer.
+  IF coalesce(v_codes, '') <> '1500,2000,3000,4000,5000,9900' THEN
+    RAISE EXCEPTION
+      'S1-B: expected the six non-cash accounts of entity three to be unclassified; got "%"',
+      coalesce(v_codes, '(nothing)');
+  END IF;
+END $$;
+
+\echo '### T188 S1-B  classifying every non-cash account -> expect ACCEPT'
+UPDATE accounts SET cash_flow_classification = CASE code
+    WHEN '4000' THEN 'OPERATING'
+    WHEN '5000' THEN 'OPERATING'
+    WHEN '2000' THEN 'OPERATING'
+    WHEN '9900' THEN 'OPERATING'
+    WHEN '1500' THEN 'INVESTING'
+    WHEN '3000' THEN 'FINANCING'
+  END
+ WHERE legal_entity_id = '3e000000-0000-0000-0000-000000000001'
+   AND code IN ('4000','5000','2000','9900','1500','3000');
+
+\echo '### T189 S1-B  the same cash flow snapshot once cash is marked and every account classified -> expect ACCEPT'
+INSERT INTO financial_snapshots(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,report_definition_id,snapshot_type,ledger_cutoff_at,payload,content_hash)
+SELECT '35000000-0000-0000-0000-000000000006','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','32000000-0000-0000-0000-000000000003','CASH_FLOW',now(),s.p,financial_snapshot_content_hash(s.p)
+  FROM (SELECT '{"rows":[]}'::jsonb AS p) s;
+
+\echo '### T190 S1-B  a cash flow snapshot claiming the INDIRECT method -> expect REJECT via CASH_FLOW_METHOD_UNSUPPORTED'
+-- doc 12 makes the classification-driven direct method the initial one and the
+-- indirect/direct presentation variants a later addition. Nothing renders an
+-- indirect statement, so a definition that claims it is refused rather than issued
+-- with direct figures under an indirect heading — a registered intention is not an
+-- executed one.
+INSERT INTO financial_snapshots(id,tenant_id,legal_entity_id,accounting_book_id,accounting_period_id,report_definition_id,snapshot_type,ledger_cutoff_at,payload,content_hash)
+SELECT '35000000-0000-0000-0000-000000000007','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','3b000000-0000-0000-0000-000000000001','3a000000-0000-0000-0000-000000000004','32000000-0000-0000-0000-000000000004','CASH_FLOW',now(),s.p,financial_snapshot_content_hash(s.p)
+  FROM (SELECT '{"rows":[]}'::jsonb AS p) s;
+
+\echo '### T191 Gate E  beginning cash + movement = ending cash, and the three sections explain the movement -> expect ACCEPT'
+-- The criterion itself, over the February-April window, with every figure stated
+-- rather than only the verdict. Opening 1000 from January''s cash sale; March buys
+-- equipment for 500 and receives 2000 of share capital; April pays 300 of rent; the
+-- February adjustment period accrues 100 of rent against payables and moves no cash,
+-- which is why it must be in the window and must contribute nothing.
+DO $$
+DECLARE r record;
+BEGIN
+  SELECT * INTO r FROM cash_flow_reconciliation(
+    '3b000000-0000-0000-0000-000000000001', '2026-02-01', '2026-04-30');
+  -- Every comparison below is IS DISTINCT FROM, and this is why: a function that
+  -- returned no row would leave every field NULL, every `<>` would evaluate to
+  -- NULL, and an IF treats NULL as false — so the scenario would pass having
+  -- measured nothing at all.
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Gate E: the reconciliation returned no row, so nothing was measured';
+  END IF;
+
+  IF r.cash_account_count IS DISTINCT FROM 1 THEN
+    RAISE EXCEPTION 'Gate E: expected one cash account, found %', r.cash_account_count;
+  END IF;
+  IF r.opening_cash IS DISTINCT FROM 1000 OR r.closing_cash IS DISTINCT FROM 2200
+     OR r.movement IS DISTINCT FROM 1200 THEN
+    RAISE EXCEPTION 'Gate E: opening %, movement %, closing % — expected 1000, 1200, 2200',
+      r.opening_cash, r.movement, r.closing_cash;
+  END IF;
+  IF r.operating IS DISTINCT FROM -300 OR r.investing IS DISTINCT FROM -500
+     OR r.financing IS DISTINCT FROM 2000 THEN
+    RAISE EXCEPTION 'Gate E: sections were operating %, investing %, financing % — expected -300, -500, 2000',
+      r.operating, r.investing, r.financing;
+  END IF;
+  IF r.unclassified IS DISTINCT FROM 0 OR r.unsectioned IS DISTINCT FROM 0 THEN
+    RAISE EXCEPTION 'Gate E: % unclassified and % unsectioned cash remains outside the three sections',
+      r.unclassified, r.unsectioned;
+  END IF;
+  IF r.ties IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'Gate E: the cash flow statement does not reconcile';
+  END IF;
+END $$;
+
+\echo '### T192 Gate E  the reconciliation does NOT tie for an entity with no cash accounts -> expect ACCEPT'
+-- The half that separates a criterion from a formality. Entity one has journals and
+-- no account marked as cash, so every component is zero and `0 + 0 = 0` is true —
+-- which is exactly how "beginning cash + movement = ending cash" passes while
+-- describing nothing. `ties` must be FALSE there.
+DO $$
+DECLARE r record;
+BEGIN
+  SELECT * INTO r FROM cash_flow_reconciliation('55555555-5555-5555-5555-555555555555');
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Gate E: the reconciliation returned no row, so nothing was measured';
+  END IF;
+  IF r.cash_account_count IS DISTINCT FROM 0 THEN
+    RAISE EXCEPTION 'Gate E: entity one was expected to have no cash accounts, it has %',
+      r.cash_account_count;
+  END IF;
+  IF r.ties IS DISTINCT FROM false THEN
+    RAISE EXCEPTION
+      'Gate E: the reconciliation reports a TIE for an entity with no cash accounts at all. That is '
+      'the empty-table pass this criterion exists to refuse.';
+  END IF;
+END $$;
+
+\echo '### T193 S1-B  an override on a CASH line -> expect REJECT via CASH_FLOW_OVERRIDE_INVALID'
+-- The cash lines are the movement being classified. Classifying one counts the same
+-- cash twice: once as the movement and once as its own explanation.
+INSERT INTO cash_flow_overrides(tenant_id,legal_entity_id,journal_line_id,classification,reason,created_by)
+  VALUES ('11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','36000000-0000-0000-0000-000000000008','FINANCING','wrong side of the entry','9e000000-0000-0000-0000-000000000001');
+
+\echo '### T194 S1-B  an override with an empty reason -> expect REJECT via cfo_reason_present'
+INSERT INTO cash_flow_overrides(tenant_id,legal_entity_id,journal_line_id,classification,reason,created_by)
+  VALUES ('11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','36000000-0000-0000-0000-000000000007','FINANCING','   ','9e000000-0000-0000-0000-000000000001');
+
+\echo '### T195 S1-B  an override that moves April''s rent into financing, and CHANGES the statement -> expect ACCEPT'
+-- doc 12: "controlled overrides". Registered is not enough — this asserts the
+-- override was APPLIED: the same window now reports zero operating and 1700
+-- financing, and still ties, because an override reallocates a movement rather
+-- than inventing one.
+INSERT INTO cash_flow_overrides(id,tenant_id,legal_entity_id,journal_line_id,classification,reason,created_by)
+  VALUES ('37000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','36000000-0000-0000-0000-000000000007','FINANCING','Rent settled as part of the lease finance schedule for April 2026.','9e000000-0000-0000-0000-000000000001');
+DO $$
+DECLARE r record;
+BEGIN
+  SELECT * INTO r FROM cash_flow_reconciliation(
+    '3b000000-0000-0000-0000-000000000001', '2026-02-01', '2026-04-30');
+  IF r.operating <> 0 OR r.financing <> 1700 THEN
+    RAISE EXCEPTION
+      'S1-B: the override did not reach the statement — operating %, financing % (expected 0 and 1700)',
+      r.operating, r.financing;
+  END IF;
+  IF r.movement <> 1200 OR NOT r.ties THEN
+    RAISE EXCEPTION 'S1-B: the override changed the total movement (%), which it must never do', r.movement;
+  END IF;
+  IF cash_flow_line_classification('36000000-0000-0000-0000-000000000007') <> 'FINANCING' THEN
+    RAISE EXCEPTION 'S1-B: the line classification function still reports the account default';
+  END IF;
+END $$;
+
+\echo '### T196 S1-B  a second override on the same line -> expect REJECT via cash_flow_overrides_journal_line_id_key'
+-- Two overrides are two answers, and an ambiguous classification is indistinguishable
+-- from none at the point it matters.
+INSERT INTO cash_flow_overrides(tenant_id,legal_entity_id,journal_line_id,classification,reason,created_by)
+  VALUES ('11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','36000000-0000-0000-0000-000000000007','INVESTING','second opinion','9e000000-0000-0000-0000-000000000001');
+
+\echo '### T197 Gate C  app_runtime DELETEs a cash flow override -> expect REJECT via permission'
+-- The second control. The trigger is one layer; a privilege the application does
+-- not hold is the other, and an override that can be removed leaves an issued
+-- statement unexplainable.
+BEGIN;
+SET LOCAL ROLE app_runtime;
+SELECT set_config('app.tenant_id','11111111-1111-1111-1111-111111111111',true);
+DELETE FROM cash_flow_overrides WHERE id = '37000000-0000-0000-0000-000000000001';
+COMMIT;
+
+\echo '### T198 Gate C  app_runtime records a mapping and an override under row-level security -> expect ACCEPT'
+-- The other half of T197 and of the revocation that carries it: INSERT and UPDATE
+-- are not gone, and the in-scope trigger can still see its subject as the runtime
+-- role. A guard whose own SELECTs were filtered to nothing by RLS would refuse
+-- every legitimate write instead — a failure no REJECT scenario can see.
+BEGIN;
+SET LOCAL ROLE app_runtime;
+SELECT set_config('app.tenant_id','11111111-1111-1111-1111-111111111111',true);
+INSERT INTO statement_account_mappings(tenant_id,report_definition_id,legal_entity_id,account_id,exclusion_reason)
+  VALUES ('11111111-1111-1111-1111-111111111111','32000000-0000-0000-0000-000000000001','3e000000-0000-0000-0000-000000000001','3d000000-0000-0000-0000-000000000007','Suspense carries no balance sheet position once cleared.');
+INSERT INTO cash_flow_overrides(id,tenant_id,legal_entity_id,journal_line_id,classification,reason,created_by)
+  VALUES ('37000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','3e000000-0000-0000-0000-000000000001','36000000-0000-0000-0000-000000000009','OPERATING','Accrued rent is an operating item when it settles.','9e000000-0000-0000-0000-000000000001');
+UPDATE cash_flow_overrides SET classification = 'OPERATING', reason = 'Reclassified after review of the lease schedule.'
+ WHERE id = '37000000-0000-0000-0000-000000000001';
+COMMIT;
+
+\echo '### T199 the controls 0053 installed are all in force -> expect ACCEPT'
+-- T134 and T156''s habit. Every scenario above is worth exactly what the catalog
+-- says it is: a later migration that dropped one of these would leave the REJECTs
+-- passing for the wrong reason until someone changed the fixture.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                  WHERE tgrelid = 'financial_snapshots'::regclass
+                    AND tgname = 'financial_snapshots_coverage'
+                    AND NOT tgisinternal AND tgenabled <> 'D') THEN
+    RAISE EXCEPTION 'the statement coverage refusal is gone or disabled';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                  WHERE tgrelid = 'financial_snapshots'::regclass
+                    AND tgname = 'financial_snapshots_content_hash'
+                    AND NOT tgisinternal AND tgenabled <> 'D') THEN
+    RAISE EXCEPTION '0050''s snapshot hash verification is gone or disabled';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conrelid = 'statement_account_mappings'::regclass
+                    AND conname = 'sam_account_uq')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conrelid = 'statement_account_mappings'::regclass
+                    AND conname = 'sam_line_xor_exclusion')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conrelid = 'report_definitions'::regclass
+                    AND conname = 'rd_cash_flow_method_present')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conrelid = 'financial_snapshots'::regclass
+                    AND conname = 'fs_snapshot_type_known')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conrelid = 'financial_snapshots'::regclass
+                    AND conname = 'fs_identity_uq') THEN
+    RAISE EXCEPTION 'a constraint 0050 or 0053 installed on the statement layer has been dropped';
+  END IF;
+
+  -- The exclusion half of the mapping rule, by definition text rather than by
+  -- name: "simplifying" it to a plain NOT NULL on report_row_id would remove the
+  -- recorded-exclusion path and leave T176 passing for a different reason.
+  IF (SELECT pg_get_constraintdef(oid) FROM pg_constraint
+       WHERE conrelid = 'statement_account_mappings'::regclass AND conname = 'sam_line_xor_exclusion')
+     NOT LIKE '%exclusion_reason%' THEN
+    RAISE EXCEPTION 'the deliberate-exclusion path is no longer part of the mapping rule';
+  END IF;
+
+  -- Both directions of the method rule, for the same reason: a one-sided CHECK
+  -- would let a balance sheet claim a cash flow method again.
+  IF (SELECT pg_get_constraintdef(oid) FROM pg_constraint
+       WHERE conrelid = 'report_definitions'::regclass AND conname = 'rd_cash_flow_method_present')
+     NOT LIKE '%IS NOT NULL%' THEN
+    RAISE EXCEPTION 'rd_cash_flow_method_present no longer states both directions';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_class c
+                  WHERE c.oid = 'statement_coverage_gaps'::regclass
+                    AND c.reloptions @> ARRAY['security_invoker=true']) THEN
+    RAISE EXCEPTION
+      'statement_coverage_gaps is no longer security_invoker, so it reads the chart of accounts as '
+      'its owner and bypasses every tenant policy underneath it';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM rls_protected_tables WHERE table_name = 'statement_account_mappings')
+     OR NOT EXISTS (SELECT 1 FROM rls_protected_tables WHERE table_name = 'cash_flow_overrides') THEN
+    RAISE EXCEPTION 'a 0053 table is protected but unregistered, so db:verify cannot see it';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_class
+                  WHERE oid = 'cash_flow_overrides'::regclass
+                    AND relrowsecurity AND relforcerowsecurity)
+     OR NOT EXISTS (SELECT 1 FROM pg_class
+                  WHERE oid = 'statement_account_mappings'::regclass
+                    AND relrowsecurity AND relforcerowsecurity) THEN
+    RAISE EXCEPTION 'a 0053 table lost row-level security';
+  END IF;
+
+  IF has_table_privilege('app_runtime', 'cash_flow_overrides', 'DELETE')
+     OR has_table_privilege('app_runtime', 'statement_account_mappings', 'TRUNCATE') THEN
+    RAISE EXCEPTION 'app_runtime regained a privilege Gate C requires be revoked on the statement layer';
+  END IF;
+  IF NOT has_function_privilege('app_runtime', 'report_period_window(uuid,date,date)', 'EXECUTE')
+     OR NOT has_function_privilege('app_runtime', 'cash_flow_reconciliation(uuid,date,date)', 'EXECUTE')
+     OR NOT has_function_privilege('app_runtime', 'statement_unmapped_accounts(uuid,uuid[])', 'EXECUTE') THEN
+    RAISE EXCEPTION 'app_runtime can no longer render a core financial statement';
+  END IF;
+END $$;

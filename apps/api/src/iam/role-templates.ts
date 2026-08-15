@@ -115,6 +115,14 @@ const ACTION_TIER: Record<string, Tier> = {
   // releasing budget is not the authority that committed it (F-921), but it is
   // the same tier.
   close: 'OPERATE',
+  // Phase 6. Recognising a period-end entry draws down an accrual, prepaid or
+  // deferral on the schedule the entry already fixed at creation — the contract
+  // calls it routine close work, and it decides nothing about anyone else's.
+  recognize: 'OPERATE',
+  // Drilling from a reported amount to the journal lines behind it reads what the
+  // reader could already see aggregated. It is the evidence for a figure they are
+  // permitted to see, not a wider grant.
+  drill_down: 'VIEW',
 
   // Changes what others may do, moves money, or rewrites a determination.
   manage: 'ADMINISTER',
@@ -213,7 +221,18 @@ export const FAMILIES = {
   assets: ['asset', 'asset_category'],
   projects: ['project', 'budget', 'forecast'],
   tax: ['tax', 'tax_code', 'tax_period', 'tax_return', 'einvoice'],
-  reporting: ['report', 'close', 'reconciliation', 'consolidation', 'fx'],
+  reporting: [
+    'report',
+    'close',
+    'reconciliation',
+    'consolidation',
+    'fx',
+    // Phase 6. A period-end entry is close work and a financial statement is the
+    // output of the reporting engine; both belong with the family whose reach a
+    // controller or accountant already holds.
+    'period_end_entry',
+    'financial_statement',
+  ],
   workflow: ['approval', 'task', 'workflow'],
   ai: ['ai'],
   integration: ['integration', 'webhook', 'migration'],

@@ -1,0 +1,32 @@
+{
+  "name": "@acct/approvals",
+  "version": "0.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run src/conditions.test.ts src/definition.test.ts src/steps.test.ts",
+    "test:integration": "vitest run src/integration"
+  },
+  "dependencies": {
+    "@acct/config": "workspace:*",
+    "@acct/database": "workspace:*",
+    "@acct/domain": "workspace:*",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

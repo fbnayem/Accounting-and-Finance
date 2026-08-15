@@ -24,3 +24,4 @@ export * from './banking';
 export * from './costing';
 export * from './depreciation';
 export * from './budgeting';
+export * from './statements';
