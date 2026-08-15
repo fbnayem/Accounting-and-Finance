@@ -1178,3 +1178,219 @@ BEGIN
     RAISE EXCEPTION 'guard_depreciation_line_posted no longer fires BEFORE UPDATE OR DELETE FOR EACH ROW';
   END IF;
 END $$;
+
+-- =============================================================================
+-- F-923 — a reversed issue gives its value back, and only through a reversal.
+-- Migration 0048.
+--
+-- `restoreConsumedLayers` gave back the layer QUANTITIES an issue drew down and
+-- wrote no cost fact, while the reversal journal debited the control account by
+-- the reversed COGS. For a weighted-average item the valuation is received
+-- minus issued over the stored rows (F-922), so it stayed short by exactly that
+-- COGS: measured over HTTP on the doc 08 example, a `difference` and an
+-- `unexplained` of 254.40 that no reconciling item could name.
+--
+-- The fix is a stored fact — `inventory_cost_restorations` — and the whole risk
+-- of adding one is that it becomes a way around 0043's freeze of consumption
+-- rows: a row that cancels a posted COGS calculation would be exactly the
+-- second version of a calculation T99 refuses. So the ACCEPT scenarios and the
+-- REJECT scenarios below are equally load-bearing. T125, T131 and T133 prove a
+-- genuine reversal can record one — a schema that refused every restoration
+-- would pass every REJECT here and leave the defect in place — and T126-T130
+-- and T132 prove nothing else can.
+-- =============================================================================
+
+\echo '### T124 fixture  a 20-unit layer and three issues drawing 6, 5 and 3 from it -> expect ACCEPT'
+-- Three separate issues so each scenario below has its own consumption to act
+-- on: a REJECT scenario reaching for a row an earlier ACCEPT had already used
+-- would be rejected by the wrong control, which is T14's lesson.
+BEGIN;
+INSERT INTO inventory_documents(id,tenant_id,legal_entity_id,accounting_book_id,document_type,document_date,posting_date,source_type)
+  VALUES ('ad000000-0000-0000-0000-000000000006','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','RECEIPT','2026-01-20','2026-01-20','OPENING_BALANCE');
+INSERT INTO inventory_movements(id,tenant_id,legal_entity_id,inventory_document_id,line_no,item_id,to_location_id,movement_date,quantity,uom,unit_cost,total_cost,currency)
+  VALUES ('ae000000-0000-0000-0000-000000000006','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','ad000000-0000-0000-0000-000000000006',1,'ac000000-0000-0000-0000-000000000001','ab000000-0000-0000-0000-000000000001','2026-01-20',20,'EA',4,80,'USD');
+UPDATE inventory_documents SET status = 'POSTED' WHERE id = 'ad000000-0000-0000-0000-000000000006';
+INSERT INTO inventory_cost_layers(id,tenant_id,legal_entity_id,accounting_book_id,item_id,warehouse_id,source_movement_id,received_date,original_quantity,remaining_quantity,unit_cost,currency)
+  VALUES ('af000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','ac000000-0000-0000-0000-000000000001','aa000000-0000-0000-0000-000000000001','ae000000-0000-0000-0000-000000000006','2026-01-20',20,20,4,'USD');
+INSERT INTO inventory_documents(id,tenant_id,legal_entity_id,accounting_book_id,document_type,document_date,posting_date)
+  VALUES ('ad000000-0000-0000-0000-000000000007','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','ISSUE','2026-01-21','2026-01-21');
+INSERT INTO inventory_movements(id,tenant_id,legal_entity_id,inventory_document_id,line_no,item_id,from_location_id,movement_date,quantity,uom,unit_cost,total_cost,currency)
+  VALUES ('ae000000-0000-0000-0000-000000000007','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','ad000000-0000-0000-0000-000000000007',1,'ac000000-0000-0000-0000-000000000001','ab000000-0000-0000-0000-000000000001','2026-01-21',-6,'EA',4,24,'USD');
+UPDATE inventory_documents SET status = 'POSTED' WHERE id = 'ad000000-0000-0000-0000-000000000007';
+INSERT INTO inventory_cost_consumptions(id,tenant_id,legal_entity_id,cost_layer_id,inventory_movement_id,quantity,unit_cost,total_cost)
+  VALUES ('b1000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','af000000-0000-0000-0000-000000000003','ae000000-0000-0000-0000-000000000007',6,4,24);
+INSERT INTO inventory_documents(id,tenant_id,legal_entity_id,accounting_book_id,document_type,document_date,posting_date)
+  VALUES ('ad000000-0000-0000-0000-000000000009','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','ISSUE','2026-01-22','2026-01-22');
+INSERT INTO inventory_movements(id,tenant_id,legal_entity_id,inventory_document_id,line_no,item_id,from_location_id,movement_date,quantity,uom,unit_cost,total_cost,currency)
+  VALUES ('ae000000-0000-0000-0000-000000000009','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','ad000000-0000-0000-0000-000000000009',1,'ac000000-0000-0000-0000-000000000001','ab000000-0000-0000-0000-000000000001','2026-01-22',-5,'EA',4,20,'USD');
+UPDATE inventory_documents SET status = 'POSTED' WHERE id = 'ad000000-0000-0000-0000-000000000009';
+INSERT INTO inventory_cost_consumptions(id,tenant_id,legal_entity_id,cost_layer_id,inventory_movement_id,quantity,unit_cost,total_cost)
+  VALUES ('b1000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','af000000-0000-0000-0000-000000000003','ae000000-0000-0000-0000-000000000009',5,4,20);
+INSERT INTO inventory_documents(id,tenant_id,legal_entity_id,accounting_book_id,document_type,document_date,posting_date)
+  VALUES ('ad000000-0000-0000-0000-00000000000b','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','ISSUE','2026-01-23','2026-01-23');
+INSERT INTO inventory_movements(id,tenant_id,legal_entity_id,inventory_document_id,line_no,item_id,from_location_id,movement_date,quantity,uom,unit_cost,total_cost,currency)
+  VALUES ('ae000000-0000-0000-0000-00000000000b','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','ad000000-0000-0000-0000-00000000000b',1,'ac000000-0000-0000-0000-000000000001','ab000000-0000-0000-0000-000000000001','2026-01-23',-3,'EA',4,12,'USD');
+UPDATE inventory_documents SET status = 'POSTED' WHERE id = 'ad000000-0000-0000-0000-00000000000b';
+INSERT INTO inventory_cost_consumptions(id,tenant_id,legal_entity_id,cost_layer_id,inventory_movement_id,quantity,unit_cost,total_cost)
+  VALUES ('b1000000-0000-0000-0000-000000000004','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','af000000-0000-0000-0000-000000000003','ae000000-0000-0000-0000-00000000000b',3,4,12);
+UPDATE inventory_cost_layers SET remaining_quantity = 6 WHERE id = 'af000000-0000-0000-0000-000000000003';
+COMMIT;
+
+\echo '### T125 F-923  a posted reversal of issue A gives back its consumption -> expect ACCEPT'
+-- The scenario the whole migration exists for, and the one a defensive schema
+-- would break: the reversal document mirrors the issue inbound, the layer gets
+-- its 6 units back, and the restoration records that the 24.00 the issue
+-- charged is no longer out of the pool. Without this row the valuation stays
+-- 24.00 short of the control account the reversal journal has just re-debited.
+BEGIN;
+INSERT INTO inventory_documents(id,tenant_id,legal_entity_id,accounting_book_id,document_type,document_date,posting_date,source_type,source_id)
+  VALUES ('ad000000-0000-0000-0000-000000000008','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','ISSUE','2026-01-24','2026-01-24','reversal','ad000000-0000-0000-0000-000000000007');
+INSERT INTO inventory_movements(id,tenant_id,legal_entity_id,inventory_document_id,line_no,item_id,to_location_id,movement_date,quantity,uom,unit_cost,total_cost,currency)
+  VALUES ('ae000000-0000-0000-0000-000000000008','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','ad000000-0000-0000-0000-000000000008',1,'ac000000-0000-0000-0000-000000000001','ab000000-0000-0000-0000-000000000001','2026-01-24',6,'EA',4,24,'USD');
+INSERT INTO inventory_cost_restorations(id,tenant_id,legal_entity_id,inventory_cost_consumption_id,inventory_movement_id)
+  VALUES ('bb000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','b1000000-0000-0000-0000-000000000002','ae000000-0000-0000-0000-000000000008');
+UPDATE inventory_cost_layers SET remaining_quantity = 12 WHERE id = 'af000000-0000-0000-0000-000000000003';
+UPDATE inventory_documents SET status = 'POSTED' WHERE id = 'ad000000-0000-0000-0000-000000000008';
+COMMIT;
+
+\echo '### T126 F-923  giving the same consumption back twice -> expect REJECT via inventory_cost_restorations_inventory_cost_consumption_id_key'
+-- The invariant a signed consumption row could not express, which is why the
+-- restoration is its own table: a reversal may return what the issue took and
+-- no more. A second restoration puts 24.00 back into a pool that never lost it
+-- twice, and only the value side would ever notice.
+INSERT INTO inventory_cost_restorations(tenant_id,legal_entity_id,inventory_cost_consumption_id,inventory_movement_id)
+  VALUES ('11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','b1000000-0000-0000-0000-000000000002','ae000000-0000-0000-0000-000000000008');
+
+\echo '### T127 F-923  a reversal of issue A giving back issue B''s consumption -> expect REJECT via POSTED_IMMUTABLE'
+-- The way around T99. 0043 freezes consumption rows because a posted
+-- calculation has no second version; a restoration cancels one, so being able
+-- to point any inbound movement at any consumption would be that second version
+-- wearing a different table. The document must be the declared reversal of the
+-- document the consumption's issue belongs to, and this one reverses A.
+INSERT INTO inventory_cost_restorations(tenant_id,legal_entity_id,inventory_cost_consumption_id,inventory_movement_id)
+  VALUES ('11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','b1000000-0000-0000-0000-000000000003','ae000000-0000-0000-0000-000000000008');
+
+\echo '### T128 F-923  re-pointing a restoration at another movement -> expect REJECT via POSTED_IMMUTABLE'
+UPDATE inventory_cost_restorations SET inventory_movement_id = 'ae000000-0000-0000-0000-000000000002'
+  WHERE id = 'bb000000-0000-0000-0000-000000000001';
+
+\echo '### T129 F-923  deleting a restoration -> expect REJECT via POSTED_IMMUTABLE'
+-- Deleting one takes 24.00 back out of the valuation with no journal saying so
+-- — the erasure T99 refuses, from the other side.
+DELETE FROM inventory_cost_restorations WHERE id = 'bb000000-0000-0000-0000-000000000001';
+
+\echo '### T130 F-923  a restoration on a reversal that never posts -> expect REJECT at COMMIT via POSTED_IMMUTABLE'
+-- The reversal document is necessarily DRAFT while its movements are written
+-- (T96: a POSTED document accepts no new movement), so the check is deferred to
+-- COMMIT rather than dropped. A draft that is never posted would leave the
+-- value restored on the subledger with nothing on the ledger.
+BEGIN;
+INSERT INTO inventory_documents(id,tenant_id,legal_entity_id,accounting_book_id,document_type,document_date,posting_date,source_type,source_id)
+  VALUES ('ad000000-0000-0000-0000-00000000000a','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','ISSUE','2026-01-25','2026-01-25','reversal','ad000000-0000-0000-0000-000000000009');
+INSERT INTO inventory_movements(id,tenant_id,legal_entity_id,inventory_document_id,line_no,item_id,to_location_id,movement_date,quantity,uom,unit_cost,total_cost,currency)
+  VALUES ('ae000000-0000-0000-0000-00000000000a','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','ad000000-0000-0000-0000-00000000000a',1,'ac000000-0000-0000-0000-000000000001','ab000000-0000-0000-0000-000000000001','2026-01-25',5,'EA',4,20,'USD');
+INSERT INTO inventory_cost_restorations(id,tenant_id,legal_entity_id,inventory_cost_consumption_id,inventory_movement_id)
+  VALUES ('bb000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','b1000000-0000-0000-0000-000000000003','ae000000-0000-0000-0000-00000000000a');
+UPDATE inventory_cost_layers SET remaining_quantity = 17 WHERE id = 'af000000-0000-0000-0000-000000000003';
+COMMIT;
+
+\echo '### T131 F-923  the same reversal, posted before COMMIT -> expect ACCEPT'
+-- The half that keeps T130 from being satisfied by a schema that refuses every
+-- restoration. Identical rows, identical ids — T130 rolled back in full — with
+-- the status flip the posting service performs last.
+BEGIN;
+INSERT INTO inventory_documents(id,tenant_id,legal_entity_id,accounting_book_id,document_type,document_date,posting_date,source_type,source_id)
+  VALUES ('ad000000-0000-0000-0000-00000000000a','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','ISSUE','2026-01-25','2026-01-25','reversal','ad000000-0000-0000-0000-000000000009');
+INSERT INTO inventory_movements(id,tenant_id,legal_entity_id,inventory_document_id,line_no,item_id,to_location_id,movement_date,quantity,uom,unit_cost,total_cost,currency)
+  VALUES ('ae000000-0000-0000-0000-00000000000a','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','ad000000-0000-0000-0000-00000000000a',1,'ac000000-0000-0000-0000-000000000001','ab000000-0000-0000-0000-000000000001','2026-01-25',5,'EA',4,20,'USD');
+INSERT INTO inventory_cost_restorations(id,tenant_id,legal_entity_id,inventory_cost_consumption_id,inventory_movement_id)
+  VALUES ('bb000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','b1000000-0000-0000-0000-000000000003','ae000000-0000-0000-0000-00000000000a');
+UPDATE inventory_cost_layers SET remaining_quantity = 17 WHERE id = 'af000000-0000-0000-0000-000000000003';
+UPDATE inventory_documents SET status = 'POSTED' WHERE id = 'ad000000-0000-0000-0000-00000000000a';
+COMMIT;
+
+\echo '### T132 F-920  DELETE a restoration as app_runtime -> expect REJECT via permission'
+-- Gate C's second control on the new fact, for 0043 section 6's reason: the
+-- trigger is one layer and a privilege the application does not hold is the
+-- other. The application only ever inserts here.
+BEGIN;
+SET LOCAL ROLE app_runtime;
+SELECT set_config('app.tenant_id','11111111-1111-1111-1111-111111111111',true);
+DELETE FROM inventory_cost_restorations WHERE id = 'bb000000-0000-0000-0000-000000000001';
+COMMIT;
+
+\echo '### T133 F-923  app_runtime records a whole reversal of issue C -> expect ACCEPT'
+-- The other half of T132, and of the revoke that carries it: UPDATE and DELETE
+-- are gone and INSERT is not, because reversing a stock issue is the
+-- application's job. Run under row-level security with the tenant GUC set, so
+-- it also proves the provenance guard can see its subject as the runtime role —
+-- a guard whose SELECTs were filtered to nothing by RLS would refuse every
+-- legitimate reversal instead, which is a failure no REJECT scenario can see.
+BEGIN;
+SET LOCAL ROLE app_runtime;
+SELECT set_config('app.tenant_id','11111111-1111-1111-1111-111111111111',true);
+INSERT INTO inventory_documents(id,tenant_id,legal_entity_id,accounting_book_id,document_type,document_date,posting_date,source_type,source_id)
+  VALUES ('ad000000-0000-0000-0000-00000000000c','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','ISSUE','2026-01-26','2026-01-26','reversal','ad000000-0000-0000-0000-00000000000b');
+INSERT INTO inventory_movements(id,tenant_id,legal_entity_id,inventory_document_id,line_no,item_id,to_location_id,movement_date,quantity,uom,unit_cost,total_cost,currency)
+  VALUES ('ae000000-0000-0000-0000-00000000000c','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','ad000000-0000-0000-0000-00000000000c',1,'ac000000-0000-0000-0000-000000000001','ab000000-0000-0000-0000-000000000001','2026-01-26',3,'EA',4,12,'USD');
+INSERT INTO inventory_cost_restorations(id,tenant_id,legal_entity_id,inventory_cost_consumption_id,inventory_movement_id)
+  VALUES ('bb000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','b1000000-0000-0000-0000-000000000004','ae000000-0000-0000-0000-00000000000c');
+UPDATE inventory_cost_layers SET remaining_quantity = 20 WHERE id = 'af000000-0000-0000-0000-000000000003';
+UPDATE inventory_documents SET status = 'POSTED' WHERE id = 'ad000000-0000-0000-0000-00000000000c';
+COMMIT;
+
+\echo '### T134 F-923  the controls 0048 installed are all in force -> expect ACCEPT'
+-- T123's habit, for the new table. The scenarios above are only worth what the
+-- catalog says they are: a later migration that dropped one would leave every
+-- REJECT here passing for the wrong reason until someone changed the fixture.
+-- tgtype 26 = BEFORE (2) + DELETE (8) + UPDATE (16); 5 = BEFORE (2) + INSERT
+-- (4); the deferred one must be initially deferred, because an immediate check
+-- would reject every legal reversal instead.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+     WHERE t.tgrelid = 'inventory_cost_restorations'::regclass AND NOT t.tgisinternal
+       AND t.tgfoid = to_regproc('guard_cost_restoration_provenance')
+       AND t.tgenabled <> 'D' AND (t.tgtype & 5) = 5)
+  THEN
+    RAISE EXCEPTION 'guard_cost_restoration_provenance no longer fires BEFORE INSERT FOR EACH ROW';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+     WHERE t.tgrelid = 'inventory_cost_restorations'::regclass AND NOT t.tgisinternal
+       AND t.tgfoid = to_regproc('reject_mutation_of_posted')
+       AND t.tgenabled <> 'D' AND (t.tgtype & 26) = 26)
+  THEN
+    RAISE EXCEPTION 'a restoration is no longer immutable';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+     WHERE t.tgrelid = 'inventory_cost_restorations'::regclass AND NOT t.tgisinternal
+       AND t.tgfoid = to_regproc('assert_restoration_document_posted')
+       AND t.tgenabled <> 'D' AND t.tgdeferrable AND t.tginitdeferred)
+  THEN
+    RAISE EXCEPTION 'the deferred posted-document check on restorations is gone or no longer deferred';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_index i
+     WHERE i.indrelid = 'inventory_cost_restorations'::regclass
+       AND i.indisunique AND i.indisvalid AND i.indpred IS NULL AND i.indnkeyatts = 1
+       AND (SELECT a.attname FROM pg_attribute a
+             WHERE a.attrelid = i.indrelid AND a.attnum = i.indkey[0]) = 'inventory_cost_consumption_id')
+  THEN
+    RAISE EXCEPTION 'a consumption can be given back more than once; the UNIQUE is gone';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_class c
+      JOIN rls_protected_tables r ON r.table_name = c.relname
+     WHERE c.relname = 'inventory_cost_restorations'
+       AND c.relrowsecurity AND c.relforcerowsecurity)
+  THEN
+    RAISE EXCEPTION 'inventory_cost_restorations lost row-level security or its registration';
+  END IF;
+  IF has_table_privilege('app_runtime','inventory_cost_restorations','UPDATE')
+     OR has_table_privilege('app_runtime','inventory_cost_restorations','DELETE') THEN
+    RAISE EXCEPTION 'app_runtime regained UPDATE or DELETE on inventory_cost_restorations';
+  END IF;
+END $$;

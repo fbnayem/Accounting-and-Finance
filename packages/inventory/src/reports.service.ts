@@ -21,14 +21,45 @@ import { readInTenant } from '@acct/database';
  *
  *   - FIFO: Σ round(remaining_quantity × unit_cost) — a FIFO layer's unit cost
  *     IS what was paid for the units still in it.
- *   - WEIGHTED_AVERAGE: Σ round(original_quantity × unit_cost) − Σ consumption
- *     total_cost, over every layer the item has ever had, consumed ones
- *     included — received minus issued. Doc 08 carries VALUE as the source of
- *     truth for this method: issues credit Inventory at the average while
- *     layers record receipts, so remaining × receipt cost stops being the
- *     value at the first issue. See `weightedAveragePoolValue` in stock.ts,
- *     which is this same expression on the posting side.
+ *   - WEIGHTED_AVERAGE: `weightedAverageLayerValue` below — received, less
+ *     issued, plus restored, over every layer the item has ever had, consumed
+ *     ones included. Doc 08 carries VALUE as the source of truth for this
+ *     method: issues credit Inventory at the average while layers record
+ *     receipts, so remaining × receipt cost stops being the value at the first
+ *     issue. See `weightedAveragePoolValue` in stock.ts, which is this same
+ *     expression on the posting side.
  */
+
+/**
+ * The weighted-average value of one cost layer, as SQL.
+ *
+ *   round(original_quantity × unit_cost)    what the receipt debited Inventory
+ *   − Σ consumption total_cost              what issues credited it
+ *   + Σ consumption total_cost restored     what a posted reversal debited back
+ *
+ * Three terms, and they are the three postings the control account holds — so
+ * the valuation cannot say something the GL does not. The restored term is
+ * F-923: `restoreConsumedLayers` used to give back the layer quantities and no
+ * cost fact, leaving this expression short by exactly the reversed COGS with no
+ * reconciling item able to name the gap.
+ *
+ * Written once and shared by both readers below rather than typed out twice.
+ * They are already "one calculation, not a rival" by intent; a second copy is
+ * how that intent stops being true, and this is the expression the whole
+ * criterion rests on. The parameters are code-supplied SQL aliases, never
+ * request input.
+ */
+function weightedAverageLayerValue(layer: string, currency: string): string {
+  return `round(${layer}.original_quantity * ${layer}.unit_cost, ${currency}.minor_unit)
+          - coalesce((SELECT sum(c.total_cost)
+                        FROM inventory_cost_consumptions c
+                       WHERE c.cost_layer_id = ${layer}.id), 0)
+          + coalesce((SELECT sum(c.total_cost)
+                        FROM inventory_cost_consumptions c
+                        JOIN inventory_cost_restorations r
+                          ON r.inventory_cost_consumption_id = c.id
+                       WHERE c.cost_layer_id = ${layer}.id), 0)`;
+}
 
 export class InventoryReportsService {
   constructor(private readonly pool: Pool) {}
@@ -153,19 +184,17 @@ export class InventoryReportsService {
       // 1. Subledger side: layers plus landed cost still attached to stock.
       // The SAME per-method expression as valuationRows — one calculation, not
       // a rival: FIFO layers at remaining × receipt cost, weighted-average
-      // layers at received minus issued (see the module comment). A consumed
-      // WA layer contributes its net — receipt value minus what issues charged
-      // out of it — which is why there is no remaining_quantity filter here.
+      // layers at received minus issued plus restored (see the module comment).
+      // A consumed WA layer contributes its net — receipt value minus what
+      // issues charged out of it and plus what reversals gave back — which is
+      // why there is no remaining_quantity filter here.
       const { rows: valuationParts } = await client.query<{
         layer_value: string;
         landed_on_hand: string;
       }>(
         `SELECT coalesce(sum(
                   CASE WHEN coalesce(s.valuation_override, i.valuation) = 'WEIGHTED_AVERAGE'
-                    THEN round(l.original_quantity * l.unit_cost, cur.minor_unit)
-                         - coalesce((SELECT sum(c.total_cost)
-                                       FROM inventory_cost_consumptions c
-                                      WHERE c.cost_layer_id = l.id), 0)
+                    THEN ${weightedAverageLayerValue('l', 'cur')}
                     ELSE round(l.remaining_quantity * l.unit_cost, cur.minor_unit)
                   END), 0)::text AS layer_value,
                 coalesce((
@@ -278,6 +307,11 @@ export class InventoryReportsService {
       // consumed difference is already INSIDE the valuation (step 1 nets every
       // layer, consumed or not), so naming it again here would double-count it
       // against a gap that no longer exists.
+      //
+      // `consumed` is NET of restorations (F-923). A layer consumed, reversed
+      // and consumed again holds two consumption rows for one unit of stock,
+      // and the gross sum would report a residue of most of the layer's value
+      // — an "explanation" that explained a gap the GL never had.
       const { rows: residue } = await client.query<{ amount: string; count: string }>(
         `SELECT coalesce(sum(round(l.original_quantity * l.unit_cost, cur.minor_unit) - c.consumed),
                          0)::text AS amount,
@@ -288,8 +322,11 @@ export class InventoryReportsService {
            LEFT JOIN item_accounting_settings s
              ON s.item_id = l.item_id AND s.legal_entity_id = l.legal_entity_id
            JOIN LATERAL (
-             SELECT coalesce(sum(total_cost), 0) AS consumed
-               FROM inventory_cost_consumptions WHERE cost_layer_id = l.id
+             SELECT coalesce(sum(cc.total_cost), 0) AS consumed
+               FROM inventory_cost_consumptions cc
+              WHERE cc.cost_layer_id = l.id
+                AND NOT EXISTS (SELECT 1 FROM inventory_cost_restorations rr
+                                 WHERE rr.inventory_cost_consumption_id = cc.id)
            ) c ON true
           WHERE l.legal_entity_id = $1 AND l.remaining_quantity = 0 AND NOT l.is_provisional
             AND coalesce(s.valuation_override, i.valuation) <> 'WEIGHTED_AVERAGE'
@@ -410,11 +447,11 @@ async function valuationRows(
   // The layer value branches on the effective valuation method (see the module
   // comment): FIFO sums the open layers at receipt cost, rounded per layer at
   // the minor unit — the same value the receipt posted. WEIGHTED_AVERAGE is
-  // received minus issued over ALL of the item's layers in this warehouse,
-  // consumed ones included, because a consumed layer whose issues charged the
-  // average rather than its receipt cost keeps that difference in the pool.
-  // Landed cost on hand is (allocated − cogs_adjustment) for layers still
-  // holding stock, matching what LANDED_COST_CAPITALIZED debited into the
+  // received minus issued plus restored over ALL of the item's layers in this
+  // warehouse, consumed ones included, because a consumed layer whose issues
+  // charged the average rather than its receipt cost keeps that difference in
+  // the pool. Landed cost on hand is (allocated − cogs_adjustment) for layers
+  // still holding stock, matching what LANDED_COST_CAPITALIZED debited into the
   // control account — identical for both methods.
   const { rows } = await client.query<ValuationRow>(
     `SELECT q.item_id, q.sku, q.name, q.warehouse_id, q.warehouse_code, q.valuation_method,
@@ -429,11 +466,7 @@ async function valuationRows(
                 sum(l.remaining_quantity) AS quantity,
                 CASE WHEN coalesce(s.valuation_override, i.valuation) = 'WEIGHTED_AVERAGE'
                   THEN (
-                    SELECT coalesce(sum(
-                             round(al.original_quantity * al.unit_cost, acur.minor_unit)
-                             - coalesce((SELECT sum(c.total_cost)
-                                           FROM inventory_cost_consumptions c
-                                          WHERE c.cost_layer_id = al.id), 0)), 0)
+                    SELECT coalesce(sum(${weightedAverageLayerValue('al', 'acur')}), 0)
                       FROM inventory_cost_layers al
                       JOIN currencies acur ON acur.code = al.currency
                      WHERE al.item_id = l.item_id AND al.warehouse_id = l.warehouse_id

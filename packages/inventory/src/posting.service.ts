@@ -285,6 +285,25 @@ export class InventoryPostingService {
         );
       }
 
+      // A reversal is not itself reversible, and this is a refusal rather than
+      // a gap. Mirroring a reversal mirrors its JOURNAL correctly and does
+      // nothing at all to the stock: the layers a reversal restored were not
+      // created by it, so `unwindCreatedLayers` finds none to take back, and
+      // the consumptions it gave back are already given back. The result was a
+      // journal that moved the control account with no cost fact behind it —
+      // the same class of defect as F-923 one step along. Re-doing what the
+      // original document did is a new document, which is also the honest
+      // record: the goods moved twice.
+      if (original.source_type === 'reversal') {
+        throw new AppError(
+          'VALIDATION_FAILED',
+          `Document ${id} is itself the reversal of ${original.source_id ?? 'another document'}. ` +
+            'A correction of a correction is a new document, not a reversal of a reversal — post ' +
+            'the movement again if it should stand (doc 08: correction creates reverse movement).',
+          { details: { document_id: id, reverses: original.source_id } },
+        );
+      }
+
       // Idempotent: a reversal of a reversal-of-X returns the existing one.
       const { rows: priorReversals } = await client.query<Record<string, unknown>>(
         `SELECT id, document_type::text AS document_type, status::text AS status,
@@ -380,10 +399,10 @@ export class InventoryPostingService {
           await this.unwindCreatedLayers(client, principal, book, movement, mirroredId);
         } else {
           // The original consumed layers; the reversal restores each one it
-          // drew from, at the same quantity — which is what "reverse movement
-          // restores quantity/value correctly" (doc 08 acceptance) means at the
-          // layer grain.
-          await restoreConsumedLayers(client, movement.id);
+          // drew from, at the same quantity AND the same value — which is what
+          // "reverse movement restores quantity/value correctly" (doc 08
+          // acceptance) means at the layer grain. The value half is F-923.
+          await restoreConsumedLayers(client, principal, book, movement.id, mirroredId);
         }
         costs.push({
           movementId: mirroredId,
@@ -518,14 +537,48 @@ export class InventoryPostingService {
         [movementId],
       );
 
+      // The other direction a movement can move value: the consumptions a
+      // reversal gave back (F-923). A movement never has both — it either drew
+      // layers down or gave drawn ones back — and each row here names the
+      // consumption it reverses, so the restored amount is the consumed amount
+      // rather than a second copy of it that could disagree.
+      const { rows: restorations } = await client.query<{
+        cost_layer_id: string;
+        quantity: string;
+        unit_cost: string;
+        total_cost: string;
+        received_date: string;
+        restored_consumption_id: string;
+        restored_movement_id: string;
+      }>(
+        `SELECT c.cost_layer_id, c.quantity::text AS quantity, c.unit_cost::text AS unit_cost,
+                c.total_cost::text AS total_cost, l.received_date::text AS received_date,
+                c.id AS restored_consumption_id,
+                c.inventory_movement_id AS restored_movement_id
+           FROM inventory_cost_restorations r
+           JOIN inventory_cost_consumptions c ON c.id = r.inventory_cost_consumption_id
+           JOIN inventory_cost_layers l ON l.id = c.cost_layer_id
+          WHERE r.inventory_movement_id = $1
+          ORDER BY l.received_date, l.id`,
+        [movementId],
+      );
+
       // Recomputed here rather than echoed, so the response demonstrates the
       // reproduction instead of asserting it: the sum of the stored rows IS
-      // the COGS, and `reproduces_movement_total` says whether it still equals
-      // what the movement posted.
-      const total = sumExact(consumptions.map((c) => D(c.total_cost)));
+      // the value the movement moved, and `reproduces_movement_total` says
+      // whether it still equals what the movement posted. Both kinds of row
+      // are magnitudes, as `inventory_movements.total_cost` is — the direction
+      // lives in the movement's signed quantity — so the reversal of an issue
+      // reproduces its own total from the rows it restored, exactly as an issue
+      // does from the rows it consumed.
+      const total = sumExact([
+        ...consumptions.map((c) => D(c.total_cost)),
+        ...restorations.map((r) => D(r.total_cost)),
+      ]);
       return {
         movement,
         consumptions,
+        restorations,
         total_cost: total.toString(),
         reproduces_movement_total:
           movement.total_cost === null ? null : total.equals(D(movement.total_cost as string)),
@@ -1032,9 +1085,12 @@ export class InventoryPostingService {
     } else if (item.valuation === 'WEIGHTED_AVERAGE') {
       // One pool, never a stored average — see weightedAverageIssue for why an
       // average is never stored. Its QUANTITY is what the locked layers still
-      // hold; its VALUE is received minus issued (`weightedAveragePoolValue`):
+      // hold; its VALUE is received minus issued plus restored
+      // (`weightedAveragePoolValue`):
       //
-      //   Σ round(original_quantity × unit_cost) − Σ consumption total_cost
+      //   Σ round(original_quantity × unit_cost)
+      //     − Σ consumption total_cost
+      //     + Σ consumption total_cost given back by a reversal   (F-923)
       //
       // over EVERY layer the item has ever had here, consumed ones included.
       // Doc 08 carries value as the source of truth: an issue credits Inventory
@@ -1044,9 +1100,11 @@ export class InventoryPostingService {
       // caught. Received minus issued is the control balance by construction —
       // the received side is the once-rounded value each receipt posted Dr
       // Inventory, the issued side the stored rows whose sum is each issue's
-      // Cr Inventory — and both are immutable stored facts (0043 freezes
-      // layers and consumption rows), the same rows exit criterion 3
-      // reproduces COGS from, so the pool cannot drift from either.
+      // Cr Inventory, and the restored side the rows a posted reversal gave
+      // back, which is its own Dr Inventory — and all three are immutable
+      // stored facts (0043 freezes layers and consumption rows, 0048 the
+      // restorations), the same rows exit criterion 3 reproduces COGS from, so
+      // the pool cannot drift from any of them.
       //
       // The facts are read AFTER the provisional-shortfall handling above: a
       // provisional layer created for this issue has no consumptions yet, so
@@ -1062,12 +1120,18 @@ export class InventoryPostingService {
         original_quantity: string;
         unit_cost: string;
         consumed_value: string;
+        restored_value: string;
       }>(
         `SELECT l.original_quantity::text AS original_quantity,
                 l.unit_cost::text AS unit_cost,
                 coalesce((SELECT sum(c.total_cost)
                             FROM inventory_cost_consumptions c
-                           WHERE c.cost_layer_id = l.id), 0)::text AS consumed_value
+                           WHERE c.cost_layer_id = l.id), 0)::text AS consumed_value,
+                coalesce((SELECT sum(c.total_cost)
+                            FROM inventory_cost_consumptions c
+                            JOIN inventory_cost_restorations r
+                              ON r.inventory_cost_consumption_id = c.id
+                           WHERE c.cost_layer_id = l.id), 0)::text AS restored_value
            FROM inventory_cost_layers l
           WHERE l.item_id = $1 AND l.warehouse_id = $2 AND l.accounting_book_id = $3`,
         [item.id, warehouseId, book.bookId],
@@ -1077,6 +1141,7 @@ export class InventoryPostingService {
           originalQuantity: D(row.original_quantity),
           unitCost: D(row.unit_cost),
           consumedValue: D(row.consumed_value),
+          restoredValue: D(row.restored_value),
         })),
         currency,
         mode,
@@ -1378,24 +1443,50 @@ async function goodsReceiptEntryId(client: PoolClient, doc: DocumentRow): Promis
 }
 
 /**
- * Restores every layer a movement consumed, by exactly the quantities its
- * stored consumption rows say it took. The bound cannot overflow: each
- * restored quantity was subtracted from that same layer, and no other writer
- * ever raises `remaining_quantity`, so remaining + restored ≤ original holds
- * under the same row locks consumption takes.
+ * Restores every layer a movement consumed — both halves of what it took.
+ *
+ * The QUANTITY goes back to the layer, by exactly what the stored consumption
+ * rows say was drawn. The bound cannot overflow: each restored quantity was
+ * subtracted from that same layer, no other writer ever raises
+ * `remaining_quantity`, and `inventory_cost_restorations`' UNIQUE on the
+ * consumption makes a second restoration of the same row impossible even if a
+ * caller tried — so remaining + restored ≤ original holds under the same row
+ * locks consumption takes.
+ *
+ * The VALUE goes back as one `inventory_cost_restorations` row per consumption
+ * — F-923. Without it the layers came back and the pool did not: a
+ * weighted-average valuation is received minus issued (F-922) and the
+ * consumption rows are still standing, so it stayed short by exactly the COGS
+ * the reversal journal had just debited back into the control account. On the
+ * doc 08 worked example the reconciliation reported `difference` 254.40 and
+ * `unexplained` 254.40, and the next issue of that item priced off the stale
+ * pool at 132.29 instead of 254.40.
+ *
+ * The restoration carries no amount of its own: the value restored IS the
+ * consumption's `total_cost`, read by join wherever the pool is derived. The
+ * consumption row itself is untouched, because the issue really did post that
+ * COGS and exit criterion 3 reproduces the journal from it; the reversal is a
+ * separate event with a journal of its own.
  */
-async function restoreConsumedLayers(client: PoolClient, movementId: string): Promise<void> {
+async function restoreConsumedLayers(
+  client: PoolClient,
+  principal: TenantPrincipal,
+  book: BookContext,
+  originalMovementId: string,
+  reversalMovementId: string,
+): Promise<void> {
   const { rows: consumptions } = await client.query<{
+    id: string;
     cost_layer_id: string;
     quantity: string;
   }>(
-    `SELECT c.cost_layer_id, c.quantity::text AS quantity
+    `SELECT c.id, c.cost_layer_id, c.quantity::text AS quantity
        FROM inventory_cost_consumptions c
        JOIN inventory_cost_layers l ON l.id = c.cost_layer_id
       WHERE c.inventory_movement_id = $1
       ORDER BY l.received_date, l.id
       FOR UPDATE OF l`,
-    [movementId],
+    [originalMovementId],
   );
 
   for (const consumption of consumptions) {
@@ -1405,6 +1496,12 @@ async function restoreConsumedLayers(client: PoolClient, movementId: string): Pr
               status = CASE WHEN is_provisional THEN status ELSE 'OPEN'::cost_layer_status END
         WHERE id = $1`,
       [consumption.cost_layer_id, consumption.quantity],
+    );
+    await client.query(
+      `INSERT INTO inventory_cost_restorations
+         (id, tenant_id, legal_entity_id, inventory_cost_consumption_id, inventory_movement_id)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [uuidv7(), principal.tenantId, book.legalEntityId, consumption.id, reversalMovementId],
     );
   }
 }

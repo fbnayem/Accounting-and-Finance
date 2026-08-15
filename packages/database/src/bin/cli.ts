@@ -343,38 +343,124 @@ async function verifySecurityLayers(pool: Pool): Promise<number> {
   // Gate C: "Posted journal application role cannot UPDATE/DELETE protected
   // accounting facts." Read from has_table_privilege rather than from the
   // requirements table, so a later GRANT that quietly restores one is caught.
-  const { rows: privileges } = await pool.query<{
+  //
+  // Derived from each requirement's own statement, not from a hardcoded list.
+  // The earlier version selected every row in `schema_guard_requirements` — so
+  // it printed "13 privilege guards in force" — while computing `still_held` for
+  // exactly three ids. Every other requirement evaluated to NULL unconditionally,
+  // which reads as "not restored" whether or not it was: `GRANT DELETE ON
+  // inventory_movements TO app_runtime` left this check printing thirteen guards
+  // and passing. That is the defect this codebase keeps meeting — a gate
+  // reporting success about something it never measured — sitting inside the
+  // verifier whose job is to catch it. The count below is now the number of
+  // privileges actually tested, so the number and the claim cannot come apart.
+  const { rows: requirements } = await pool.query<{
     id: string;
     statement: string;
-    still_held: string | null;
-  }>(
-    `SELECT r.id, r.statement,
-            nullif(concat_ws(', ',
-              CASE WHEN has_table_privilege('app_runtime','journal_lines','UPDATE')
-                   AND r.id = 'revoke_line_mutation' THEN 'journal_lines.UPDATE' END,
-              CASE WHEN has_table_privilege('app_runtime','journal_lines','DELETE')
-                   AND r.id = 'revoke_line_mutation' THEN 'journal_lines.DELETE' END,
-              CASE WHEN has_table_privilege('app_runtime','journal_entries','DELETE')
-                   AND r.id = 'revoke_entry_delete' THEN 'journal_entries.DELETE' END,
-              CASE WHEN has_table_privilege('app_runtime','audit_events','UPDATE')
-                   AND r.id = 'revoke_audit_mutation' THEN 'audit_events.UPDATE' END,
-              CASE WHEN has_table_privilege('app_runtime','audit_events','DELETE')
-                   AND r.id = 'revoke_audit_mutation' THEN 'audit_events.DELETE' END
-            ), '') AS still_held
-       FROM schema_guard_requirements r
-      ORDER BY r.id`,
-  );
-  const restored = privileges.filter((p) => p.still_held);
-  if (restored.length > 0) {
-    for (const p of restored) {
-      console.error(
-        `  ${c.red}FAIL${c.reset}  app_runtime still holds ${p.still_held} — "${p.id}" was undone`,
+    applied_at: string | null;
+  }>(`SELECT id, statement, applied_at FROM schema_guard_requirements ORDER BY id`);
+
+  const REVOKE = /^REVOKE\s+([A-Z,\s]+?)\s+ON\s+(.+?)\s+FROM\s+([a-z_][a-z0-9_]*)\s*;?$/i;
+  // The registry holds grants as well: two requirements GRANT EXECUTE on the
+  // functions that are the only sanctioned way to mutate draft lines and claim
+  // scheduler work. Their polarity is the opposite — the privilege must still be
+  // HELD — and a check that only understood REVOKE would have to skip them,
+  // which is the hole this rewrite exists to close.
+  const GRANT_EXECUTE = /^GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+(.+?)\s+TO\s+([a-z_][a-z0-9_]*)\s*;?$/i;
+
+  /** Splits a comma list without cutting inside a function signature's parentheses. */
+  const splitTopLevel = (value: string): string[] => {
+    const parts: string[] = [];
+    let depth = 0;
+    let current = '';
+    for (const char of value) {
+      if (char === '(') depth++;
+      else if (char === ')') depth--;
+      if (char === ',' && depth === 0) {
+        parts.push(current.trim());
+        current = '';
+        continue;
+      }
+      current += char;
+    }
+    if (current.trim()) parts.push(current.trim());
+    return parts;
+  };
+
+  const privilegeProblems: string[] = [];
+  let privilegesChecked = 0;
+
+  for (const requirement of requirements) {
+    // A requirement registered and never executed is F-920's exact shape: 0038
+    // registered two revocations, ran neither, and this check reported them in
+    // force for a whole phase.
+    if (requirement.applied_at === null) {
+      privilegeProblems.push(
+        `"${requirement.id}" is registered but was never executed — ${requirement.statement}`,
       );
+      continue;
+    }
+
+    const granted = GRANT_EXECUTE.exec(requirement.statement.trim());
+    if (granted) {
+      const role = granted[2]!;
+      for (const signature of splitTopLevel(granted[1]!)) {
+        const { rows } = await pool.query<{ held: boolean }>(
+          `SELECT has_function_privilege($1, $2, 'EXECUTE') AS held`,
+          [role, signature],
+        );
+        privilegesChecked++;
+        if (!rows[0]?.held) {
+          privilegeProblems.push(
+            `${role} has LOST execute on ${signature} — "${requirement.id}" was undone, and the ` +
+              `only sanctioned path to that operation is now closed to the application`,
+          );
+        }
+      }
+      continue;
+    }
+
+    const parsed = REVOKE.exec(requirement.statement.trim());
+    if (!parsed) {
+      // Unparseable must FAIL, never be skipped. A requirement this check cannot
+      // read is a requirement it is not enforcing, and silently passing it would
+      // rebuild the hole this replaced.
+      privilegeProblems.push(
+        `"${requirement.id}" cannot be verified: ${requirement.statement} is not a REVOKE ` +
+          `this check understands, so nothing confirms it is still in force`,
+      );
+      continue;
+    }
+
+    const privileges = parsed[1]!.split(',').map((p) => p.trim().toUpperCase());
+    const tables = parsed[2]!.split(',').map((t) => t.trim());
+    const role = parsed[3]!;
+
+    for (const table of tables) {
+      for (const privilege of privileges) {
+        const { rows } = await pool.query<{ held: boolean }>(
+          `SELECT has_table_privilege($1, $2, $3) AS held`,
+          [role, table, privilege],
+        );
+        privilegesChecked++;
+        if (rows[0]?.held) {
+          privilegeProblems.push(
+            `${role} still holds ${table}.${privilege} — "${requirement.id}" was undone`,
+          );
+        }
+      }
+    }
+  }
+
+  if (privilegeProblems.length > 0) {
+    for (const problem of privilegeProblems) {
+      console.error(`  ${c.red}FAIL${c.reset}  ${problem}`);
     }
     failed++;
   } else {
     console.log(
-      `  ${c.green}ok${c.reset}    ${privileges.length} privilege guards in force on app_runtime (Gate C)`,
+      `  ${c.green}ok${c.reset}    ${privilegesChecked} privileges verified across ` +
+        `${requirements.length} guard requirements (Gate C)`,
     );
   }
 

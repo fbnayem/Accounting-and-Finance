@@ -131,12 +131,27 @@ export interface PoolLayerFact {
   readonly unitCost: Decimal;
   /** Σ `total_cost` over the layer's `inventory_cost_consumptions` rows. */
   readonly consumedValue: Decimal;
+  /**
+   * Σ `total_cost` over those same consumption rows that a reversal has given
+   * back — the ones carrying an `inventory_cost_restorations` row (F-923).
+   *
+   * Required rather than optional. An issue that was reversed is not an issue
+   * that never happened: its consumption rows stand, because the journal it
+   * posted stands and exit criterion 3 reproduces that journal from them. What
+   * the reversal changes is whether the pool is still short by them, and a
+   * caller that could omit this field would be one that silently reports the
+   * pre-reversal value — which is precisely the defect (`difference` 254.40 on
+   * the doc 08 run, with no reconciling item able to name it).
+   */
+  readonly restoredValue: Decimal;
 }
 
 /**
- * The value of a weighted-average pool: received minus issued.
+ * The value of a weighted-average pool: received, less issued, plus restored.
  *
- *   Σ round(original_quantity × unit_cost, minor unit)  −  Σ consumption total_cost
+ *   Σ round(original_quantity × unit_cost, minor unit)
+ *     − Σ consumption total_cost
+ *     + Σ consumption total_cost where a reversal gave it back
  *
  * Doc 08 carries VALUE as the source of truth for weighted average. An issue
  * credits Inventory by the average-based COGS while the layers lose QUANTITY
@@ -154,8 +169,17 @@ export interface PoolLayerFact {
  * the first layer contributes 200.00 − 212.00 = −12.00 forever. Dropping
  * consumed layers is precisely how the drift happened.
  *
- * Both operands arrive at the minor unit after their own single rounding, so
- * the difference is too — no rounding decision is taken here.
+ * The restored term is F-923, and it is the same argument in the other
+ * direction. Reversing an issue debits Inventory by the COGS it reverses, so
+ * the pool has to come back with it; `restoreConsumedLayers` used to give back
+ * only the layer QUANTITIES, leaving received-minus-issued short by the whole
+ * reversed COGS with nothing in the reconciliation able to name the gap. The
+ * three terms here are the three postings the control account holds — receipt
+ * debit, issue credit, reversal debit — so the valuation cannot say something
+ * the GL does not.
+ *
+ * Every operand arrives at the minor unit after its own single rounding, so the
+ * result is too — no rounding decision is taken here.
  */
 export function weightedAveragePoolValue(
   facts: readonly PoolLayerFact[],
@@ -166,7 +190,8 @@ export function weightedAveragePoolValue(
     facts.map((fact) => movementValue(fact.originalQuantity, fact.unitCost, currency, mode)),
   );
   const issued = sumExact(facts.map((fact) => fact.consumedValue));
-  return received.sub(issued).rescale(MONEY_SCALE);
+  const restored = sumExact(facts.map((fact) => fact.restoredValue));
+  return received.sub(issued).add(restored).rescale(MONEY_SCALE);
 }
 
 // ---------------------------------------------------------------------------

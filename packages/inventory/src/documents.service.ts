@@ -901,10 +901,16 @@ async function originalIssueUnitCost(
     quantity: string;
     status: string;
     total_cost: string;
+    reversed: boolean;
   }>(
     `SELECT m.item_id, m.legal_entity_id, m.quantity::text AS quantity, d.status::text AS status,
             coalesce((SELECT sum(c.total_cost) FROM inventory_cost_consumptions c
-                       WHERE c.inventory_movement_id = m.id), 0)::text AS total_cost
+                       WHERE c.inventory_movement_id = m.id), 0)::text AS total_cost,
+            EXISTS (SELECT 1
+                      FROM inventory_cost_restorations r
+                      JOIN inventory_cost_consumptions rc
+                        ON rc.id = r.inventory_cost_consumption_id
+                     WHERE rc.inventory_movement_id = m.id) AS reversed
        FROM inventory_movements m
        JOIN inventory_documents d ON d.id = m.inventory_document_id
       WHERE m.id = $1`,
@@ -912,6 +918,19 @@ async function originalIssueUnitCost(
   );
   const original = rows[0];
   if (!original) throw notFound('inventory_movement', originalMovementId);
+  // F-923's other consequence. A reversal has already put this issue's stock
+  // and its value back; returning against it too would restore the same units
+  // twice — once as layers the reversal reopened, once as a new layer priced
+  // off the COGS of an issue that no longer stands. The restoration rows are
+  // what make that visible, so this is the first time it could be refused.
+  if (original.reversed) {
+    throw new AppError(
+      'VALIDATION_FAILED',
+      `Line ${lineIndex + 1}: issue movement ${originalMovementId} has already been reversed, so ` +
+        'its stock is back on the shelf. There is nothing to return against it.',
+      { details: { inventory_movement_id: originalMovementId } },
+    );
+  }
   if (
     original.legal_entity_id !== book.legalEntityId ||
     original.item_id !== itemId ||
