@@ -20,3 +20,11 @@ bench/results/
 .DS_Store
 Thumbs.db
 *.log
+
+# Nothing but the v1.0 handoff belongs in "project plan/" — a 60MB Go installer
+# was once swept in by `git add -A`. The folder is the immutable specification
+# package and every file in it is hash-verified against its MANIFEST.
+project plan/*.msi
+project plan/*.exe
+project plan/*.zip
+*.msi
