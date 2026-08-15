@@ -1394,3 +1394,306 @@ BEGIN
     RAISE EXCEPTION 'app_runtime regained UPDATE or DELETE on inventory_cost_restorations';
   END IF;
 END $$;
+
+-- =============================================================================
+-- 0049 — the journal approval threshold and maker/checker
+-- =============================================================================
+-- The worst finding of the Phase 6 audit, and it was in shipped Phase 2/3 code:
+-- `accounting_policies.journal_approval_threshold` was read into every posting
+-- context and compared to nothing. Both halves are proved below, because a
+-- control that only refuses is indistinguishable from one that refuses
+-- everything — and one that refused every journal would be an outage.
+--
+-- The scenarios run against a SECOND, non-primary book on entity one, with its
+-- own book-scoped policy. Deliberately: a threshold on the primary book would
+-- silently govern every journal T5 onwards writes, and every scenario appended
+-- after this block, which is how a fixture becomes a trap for the next author.
+
+\echo '### T135 fixture  a second book, its own policy with a 1000 threshold, and three users -> expect ACCEPT'
+-- Its own scenario, for T26 and T45 reason: a fixture inside a rejected block is
+-- rolled back, and everything after it then asserts against nothing.
+INSERT INTO users(id,email,display_name) VALUES
+  ('9e000000-0000-0000-0000-000000000001','maker@example.com','Maker'),
+  ('9e000000-0000-0000-0000-000000000002','checker@example.com','Checker'),
+  ('9e000000-0000-0000-0000-000000000003','third@example.com','Third party');
+INSERT INTO accounting_books(id,tenant_id,legal_entity_id,code,name,base_currency,is_primary)
+  VALUES ('91000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','APR','Approval book','USD',false);
+INSERT INTO journals(id,tenant_id,legal_entity_id,accounting_book_id,code,name,journal_type)
+  VALUES ('92000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','APJ','Approval journal','GENERAL');
+-- Book-scoped, so `ORDER BY accounting_book_id NULLS LAST` prefers it over the
+-- entity default T45 created — the same resolution loadBookContext performs.
+INSERT INTO accounting_policies(id,tenant_id,legal_entity_id,accounting_book_id,version,valid_from,journal_approval_threshold)
+  VALUES ('93000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001',1,'2026-01-01',1000);
+
+\echo '### T136 F-106  a 2500 journal POSTED with no approval -> expect REJECT at COMMIT via APPROVAL_REQUIRED'
+-- The bypass itself. Before 0049 this block committed, and the threshold that
+-- should have refused it was a column the tenant could write and nothing read.
+BEGIN;
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,entry_number,posting_date,source_type,base_currency,status,posted_at,created_by)
+  VALUES ('94000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','AP-1','2026-01-15','MANUAL','USD','POSTED',now(),'9e000000-0000-0000-0000-000000000001');
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_debit,base_currency,base_debit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000001','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-15',1,'a0000000-0000-0000-0000-000000000001','USD',2500,'USD',2500);
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_credit,base_currency,base_credit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000001','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-15',2,'a0000000-0000-0000-0000-000000000002','USD',2500,'USD',2500);
+COMMIT;
+
+\echo '### T137 F-106  the same 2500 journal WITH an approval by a second person -> expect ACCEPT'
+-- The half that keeps T136 from being satisfied by a schema that refuses every
+-- large journal. Identical rows and identical ids — T136 rolled back in full —
+-- plus the two columns that record who approved it.
+BEGIN;
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,entry_number,posting_date,source_type,base_currency,status,posted_at,created_by,approved_by,approved_at,approval_state)
+  VALUES ('94000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','AP-1','2026-01-15','MANUAL','USD','POSTED',now(),'9e000000-0000-0000-0000-000000000001','9e000000-0000-0000-0000-000000000002',now(),'APPROVED');
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_debit,base_currency,base_debit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000001','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-15',1,'a0000000-0000-0000-0000-000000000001','USD',2500,'USD',2500);
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_credit,base_currency,base_credit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000001','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-15',2,'a0000000-0000-0000-0000-000000000002','USD',2500,'USD',2500);
+COMMIT;
+
+\echo '### T138 F-106  a 999.99 journal, under the threshold, with no approval at all -> expect ACCEPT'
+-- The criterion that keeps the ledger usable. A control that refuses everything
+-- is not a control, and this is the case that separates the two.
+BEGIN;
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,entry_number,posting_date,source_type,base_currency,status,posted_at,created_by)
+  VALUES ('94000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','AP-2','2026-01-15','MANUAL','USD','POSTED',now(),'9e000000-0000-0000-0000-000000000001');
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_debit,base_currency,base_debit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000002','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-15',1,'a0000000-0000-0000-0000-000000000001','USD',999.99,'USD',999.99);
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_credit,base_currency,base_credit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000002','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-15',2,'a0000000-0000-0000-0000-000000000002','USD',999.99,'USD',999.99);
+COMMIT;
+
+\echo '### T139 F-106  a journal of EXACTLY 1000.00, the threshold itself, unapproved -> expect REJECT at COMMIT via APPROVAL_REQUIRED'
+-- Gate F: "approval thresholds and conditions pass boundary tests." A threshold
+-- of 1000 means one thousand needs approving; reading it as strictly-greater
+-- puts the roundest number anyone will ever test with on the permissive side,
+-- and the tenant finds the boundary is off by a cent at the audit.
+BEGIN;
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,entry_number,posting_date,source_type,base_currency,status,posted_at,created_by)
+  VALUES ('94000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','AP-3','2026-01-15','MANUAL','USD','POSTED',now(),'9e000000-0000-0000-0000-000000000001');
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_debit,base_currency,base_debit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000003','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-15',1,'a0000000-0000-0000-0000-000000000001','USD',1000,'USD',1000);
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_credit,base_currency,base_credit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000003','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-15',2,'a0000000-0000-0000-0000-000000000002','USD',1000,'USD',1000);
+COMMIT;
+
+\echo '### T140 Gate F  a journal approved by the person who prepared it -> expect REJECT via je_maker_checker'
+-- JournalService.approve has refused this in TypeScript since Phase 2. The
+-- database had no opinion at all, so any other writer — a worker, a fix-up
+-- script, the next service — could record it and nothing downstream would know.
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,posting_date,source_type,base_currency,status,created_by,approved_by,approved_at)
+  VALUES ('94000000-0000-0000-0000-000000000004','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-15','MANUAL','USD','DRAFT','9e000000-0000-0000-0000-000000000001','9e000000-0000-0000-0000-000000000001',now());
+
+\echo '### T141 Gate F  an approval recorded against an UNKNOWN preparer -> expect REJECT via je_maker_checker'
+-- The vacuous-control case, and the reason every CHECK 0049 writes is NULL-safe.
+-- Written the natural way — approved_by <> created_by — this row evaluates to
+-- NULL, and PostgreSQL accepts a CHECK that is not FALSE. The control would be
+-- decorative for precisely the rows where the preparer is unknown, which is the
+-- case where it matters most.
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,posting_date,source_type,base_currency,status,created_by,approved_by,approved_at)
+  VALUES ('94000000-0000-0000-0000-000000000005','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-15','MANUAL','USD','DRAFT',NULL,'9e000000-0000-0000-0000-000000000002',now());
+
+\echo '### T142 F-106  a large unapproved entry claiming to reverse an UNAPPROVED one -> expect REJECT at COMMIT via APPROVAL_REQUIRED'
+-- The shape any bypass through the reversal door would take. reversal_of_id is
+-- a plain column the application role can write, so "it says it is a reversal"
+-- is not evidence; 0049 exempts a reversal only when the entry it names
+-- actually carries an approval. AP-2 is the 999.99 journal, which needed none.
+BEGIN;
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,entry_number,posting_date,source_type,base_currency,status,posted_at,created_by,reversal_of_id)
+  VALUES ('94000000-0000-0000-0000-000000000006','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','AP-6','2026-01-16','REVERSAL','USD','POSTED',now(),'9e000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000002');
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_credit,base_currency,base_credit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000006','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-16',1,'a0000000-0000-0000-0000-000000000001','USD',4000,'USD',4000);
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_debit,base_currency,base_debit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000006','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-16',2,'a0000000-0000-0000-0000-000000000002','USD',4000,'USD',4000);
+COMMIT;
+
+\echo '### T143 F-106  the reversal of the APPROVED 2500 journal, itself unapproved -> expect ACCEPT'
+-- doc 01 rule 4: posted history is corrected by reversal, never by editing. No
+-- route approves a reversal — it is created and posted by one command — so
+-- demanding a second approval would make every approved journal permanently
+-- irreversible. The exemption is carried by the approval already on AP-1.
+BEGIN;
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,entry_number,posting_date,source_type,base_currency,status,posted_at,created_by,reversal_of_id)
+  VALUES ('94000000-0000-0000-0000-000000000007','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','AP-7','2026-01-16','REVERSAL','USD','POSTED',now(),'9e000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000001');
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_credit,base_currency,base_credit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000007','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-16',1,'a0000000-0000-0000-0000-000000000001','USD',2500,'USD',2500);
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_debit,base_currency,base_debit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000007','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-16',2,'a0000000-0000-0000-0000-000000000002','USD',2500,'USD',2500);
+COMMIT;
+
+\echo '### T144 Gate C  app_runtime posts 5000 unapproved, under row-level security -> expect REJECT at COMMIT via APPROVAL_REQUIRED'
+-- The application role is the one that actually posts, and 0049 relies on the
+-- guard being able to SELECT its own subject. A guard whose reads were filtered
+-- to nothing by RLS would compute a zero amount and wave everything through —
+-- a failure no scenario running as the owner can see.
+BEGIN;
+SET LOCAL ROLE app_runtime;
+SELECT set_config('app.tenant_id','11111111-1111-1111-1111-111111111111',true);
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,entry_number,posting_date,source_type,base_currency,status,posted_at,created_by)
+  VALUES ('94000000-0000-0000-0000-000000000008','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','AP-8','2026-01-17','MANUAL','USD','POSTED',now(),'9e000000-0000-0000-0000-000000000001');
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_debit,base_currency,base_debit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000008','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-17',1,'a0000000-0000-0000-0000-000000000001','USD',5000,'USD',5000);
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_credit,base_currency,base_credit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000008','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-17',2,'a0000000-0000-0000-0000-000000000002','USD',5000,'USD',5000);
+COMMIT;
+
+\echo '### T145 Gate C  app_runtime posts the same 5000 WITH an approval, under row-level security -> expect ACCEPT'
+-- The other half of T144, and the one that proves the guard is reading rather
+-- than merely raising: identical rows, identical ids, plus the approval.
+BEGIN;
+SET LOCAL ROLE app_runtime;
+SELECT set_config('app.tenant_id','11111111-1111-1111-1111-111111111111',true);
+INSERT INTO journal_entries(id,tenant_id,legal_entity_id,accounting_book_id,journal_id,accounting_period_id,entry_number,posting_date,source_type,base_currency,status,posted_at,created_by,approved_by,approved_at,approval_state)
+  VALUES ('94000000-0000-0000-0000-000000000008','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','AP-8','2026-01-17','MANUAL','USD','POSTED',now(),'9e000000-0000-0000-0000-000000000001','9e000000-0000-0000-0000-000000000002',now(),'APPROVED');
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_debit,base_currency,base_debit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000008','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-17',1,'a0000000-0000-0000-0000-000000000001','USD',5000,'USD',5000);
+INSERT INTO journal_lines(tenant_id,journal_entry_id,legal_entity_id,accounting_book_id,accounting_period_id,posting_date,line_no,account_id,transaction_currency,transaction_credit,base_currency,base_credit)
+  VALUES ('11111111-1111-1111-1111-111111111111','94000000-0000-0000-0000-000000000008','33333333-3333-3333-3333-333333333333','91000000-0000-0000-0000-000000000001','77777777-7777-7777-7777-777777777777','2026-01-17',2,'a0000000-0000-0000-0000-000000000002','USD',5000,'USD',5000);
+COMMIT;
+
+\echo '### T146 Gate F  rewriting approved_by while marking a POSTED entry REVERSED -> expect REJECT via POSTED_IMMUTABLE'
+-- 0006 permits exactly one UPDATE on a POSTED entry, and its frozen-column list
+-- did not include the approval. The one permitted statement could therefore
+-- rewrite who approved a posted journal, or erase the approval entirely. An
+-- approval that can be rewritten afterwards is not a record of anything.
+UPDATE journal_entries
+   SET status = 'REVERSED', approved_by = '9e000000-0000-0000-0000-000000000003'
+ WHERE id = '94000000-0000-0000-0000-000000000001';
+
+\echo '### T147 Gate F  the same entry marked REVERSED with its approval untouched -> expect ACCEPT'
+-- The half that keeps T146 from being satisfied by freezing the row completely,
+-- which would make reversal impossible and doc 01 rule 4 unimplementable.
+UPDATE journal_entries SET status = 'REVERSED' WHERE id = '94000000-0000-0000-0000-000000000001';
+
+\echo '### T148 Gate F  a vendor bill approved with no preparer on record -> expect REJECT via vendor_bills_maker_checker'
+-- vendor_bills had no preparer column at all before 0049, so the doc 14
+-- maker/checker rule was not a weak rule about a bill, it was an unstateable
+-- one. A bill entered before the column existed carries NULL and is permanently
+-- unapprovable — the NULL-safe rule doing its job, not a gap in it.
+UPDATE vendor_bills
+   SET approved_by = '9e000000-0000-0000-0000-000000000002', approved_at = now()
+ WHERE id = 'e7000000-0000-0000-0000-000000000001';
+
+\echo '### T149 Gate F  a vendor bill approved by the person who entered it -> expect REJECT via vendor_bills_maker_checker'
+UPDATE vendor_bills
+   SET created_by = '9e000000-0000-0000-0000-000000000001',
+       approved_by = '9e000000-0000-0000-0000-000000000001', approved_at = now()
+ WHERE id = 'e7000000-0000-0000-0000-000000000001';
+
+\echo '### T150 Gate F  a vendor bill approved by a different person -> expect ACCEPT'
+-- The half that separates a maker/checker rule from a table that refuses every
+-- approval.
+UPDATE vendor_bills
+   SET created_by = '9e000000-0000-0000-0000-000000000001',
+       approved_by = '9e000000-0000-0000-0000-000000000002', approved_at = now()
+ WHERE id = 'e7000000-0000-0000-0000-000000000001';
+
+\echo '### T151 Gate F  an invoice approved by the person who raised it -> expect REJECT via invoices_maker_checker'
+UPDATE invoices
+   SET created_by = '9e000000-0000-0000-0000-000000000001',
+       approved_by = '9e000000-0000-0000-0000-000000000001', approved_at = now()
+ WHERE id = 'e0000000-0000-0000-0000-000000000001';
+
+\echo '### T152 Gate F  an invoice approved by a different person -> expect ACCEPT'
+UPDATE invoices
+   SET created_by = '9e000000-0000-0000-0000-000000000001',
+       approved_by = '9e000000-0000-0000-0000-000000000002', approved_at = now()
+ WHERE id = 'e0000000-0000-0000-0000-000000000001';
+
+\echo '### T153 Gate F  a payment run approved with no preparer on record -> expect REJECT via pr_maker_checker'
+-- The vacuous CHECK the audit found. pr_maker_checker read
+-- "approved_by IS NULL OR approved_by <> created_by": with a NULL created_by the
+-- comparison is NULL, the whole expression is NULL, and a CHECK that is not
+-- FALSE passes. The control read as enforcement and behaved as nothing.
+INSERT INTO payment_runs(id,tenant_id,legal_entity_id,accounting_book_id,run_number,bank_account_id,payment_date,currency,total_amount,approved_by,approved_at)
+  VALUES ('95000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','PR-1','f1000000-0000-0000-0000-000000000001','2026-01-20','USD',5000,'9e000000-0000-0000-0000-000000000002',now());
+
+\echo '### T154 Gate F  a payment run whose second approver is the preparer -> expect REJECT via pr_dual_approvers_differ'
+-- doc 14: "payment over threshold requires two DISTINCT approvals." The shipped
+-- constraint compared the second approver to the first and never to the
+-- preparer, so the person who built the run could stand as its second approval
+-- — the control failing at the point of the money.
+INSERT INTO payment_runs(id,tenant_id,legal_entity_id,accounting_book_id,run_number,bank_account_id,payment_date,currency,total_amount,created_by,approved_by,approved_at,second_approved_by,second_approved_at)
+  VALUES ('95000000-0000-0000-0000-000000000002','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','PR-2','f1000000-0000-0000-0000-000000000001','2026-01-20','USD',5000,'9e000000-0000-0000-0000-000000000001','9e000000-0000-0000-0000-000000000002',now(),'9e000000-0000-0000-0000-000000000001',now());
+
+\echo '### T155 Gate F  a payment run with three distinct people -> expect ACCEPT'
+INSERT INTO payment_runs(id,tenant_id,legal_entity_id,accounting_book_id,run_number,bank_account_id,payment_date,currency,total_amount,created_by,approved_by,approved_at,second_approved_by,second_approved_at)
+  VALUES ('95000000-0000-0000-0000-000000000003','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','PR-3','f1000000-0000-0000-0000-000000000001','2026-01-20','USD',5000,'9e000000-0000-0000-0000-000000000001','9e000000-0000-0000-0000-000000000002',now(),'9e000000-0000-0000-0000-000000000003',now());
+
+\echo '### T156 the controls 0049 installed are all in force -> expect ACCEPT'
+-- T123 and T134 habit. The scenarios above are only worth what the catalog says
+-- they are: a later migration that dropped one, or replaced a NULL-safe CHECK
+-- with the natural-looking vacuous one, would leave every REJECT above passing
+-- for the wrong reason until someone changed the fixture.
+DO $$
+BEGIN
+  -- Deferred matters as much as present: an immediate trigger reads zero lines
+  -- on the subledger path, where the header is written before them, and would
+  -- pass every document posting in the platform.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+     WHERE t.tgrelid = 'journal_entries'::regclass AND NOT t.tgisinternal
+       AND t.tgfoid = to_regproc('assert_journal_approval')
+       AND t.tgenabled <> 'D' AND t.tgdeferrable AND t.tginitdeferred)
+  THEN
+    RAISE EXCEPTION 'the approval threshold trigger is gone, disabled, or no longer deferred';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conrelid = 'journal_entries'::regclass AND conname = 'je_maker_checker')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conrelid = 'invoices'::regclass AND conname = 'invoices_maker_checker')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conrelid = 'vendor_bills'::regclass AND conname = 'vendor_bills_maker_checker')
+  THEN
+    RAISE EXCEPTION 'a maker/checker constraint 0049 installed has been dropped';
+  END IF;
+
+  -- The NULL-safe half by name. A later hand "simplifying" any of these back to
+  -- `approved_by <> created_by` restores the vacuous control, and every REJECT
+  -- scenario above would keep passing while the rows that matter walked through.
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname IN ('je_maker_checker','invoices_maker_checker','vendor_bills_maker_checker',
+                       'pr_maker_checker','pr_dual_approvers_differ')
+       AND pg_get_constraintdef(oid) NOT LIKE '%created_by IS NOT NULL%')
+  THEN
+    RAISE EXCEPTION 'a maker/checker CHECK is vacuous again for a NULL preparer';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'vendor_bills' AND column_name = 'created_by')
+  THEN
+    RAISE EXCEPTION 'vendor_bills lost the preparer column, so maker/checker is unstateable again';
+  END IF;
+
+  IF (SELECT prosrc FROM pg_proc WHERE oid = to_regproc('guard_journal_entry_immutable'))
+     NOT LIKE '%NEW.approved_by%'
+  THEN
+    RAISE EXCEPTION 'a posted journal approval can be rewritten on the way to REVERSED again';
+  END IF;
+END $$;
+
+\echo '### T157 0049  an APPROVED invoice with no number yet -> expect ACCEPT'
+-- The constraint that made `POST /invoices/{id}/approve` unreachable. It read
+-- "status = 'DRAFT' OR invoice_number IS NOT NULL", and this system allocates
+-- the invoice number at POSTING — so the moment approval set status = 'APPROVED'
+-- on a numberless draft, the row violated it and the route returned 422 naming a
+-- constraint. It had never once succeeded. Voiding an unposted draft hit the
+-- same wall from the other side.
+INSERT INTO invoices(id,tenant_id,legal_entity_id,accounting_book_id,customer_id,document_date,posting_date,currency,status,subtotal,tax_total,total,base_total,amount_due)
+  VALUES ('96000000-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','33333333-3333-3333-3333-333333333333','55555555-5555-5555-5555-555555555555','d0000000-0000-0000-0000-000000000001','2026-01-11','2026-01-11','USD','APPROVED',100,0,100,100,100);
+
+\echo '### T158 0049  a VOID invoice that was never posted and never numbered -> expect ACCEPT'
+UPDATE invoices SET status = 'VOID' WHERE id = '96000000-0000-0000-0000-000000000001';
+
+\echo '### T159 0049  a POSTED invoice with no number -> expect REJECT via invoices_posted_has_number'
+-- The half that shows 4b was a correction and not a weakening: the rule the
+-- constraint is named for is untouched. A number is required in every state
+-- where the invoice is an accounting fact, which is what doc 02 asks for and
+-- what the old expression happened to enforce alongside three states it should
+-- never have covered.
+UPDATE invoices SET status = 'POSTED' WHERE id = '96000000-0000-0000-0000-000000000001';
+
+\echo '### T160 0049  a PARTIALLY_PAID invoice with no number -> expect REJECT via invoices_posted_has_number'
+UPDATE invoices SET status = 'PARTIALLY_PAID' WHERE id = '96000000-0000-0000-0000-000000000001';

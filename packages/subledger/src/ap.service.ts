@@ -46,7 +46,23 @@ import {
  * an override that requires a permission and a reason, and that is recorded.
  */
 
-const DRAFT_STATES = new Set(['DRAFT', 'PENDING_APPROVAL', 'APPROVED']);
+/**
+ * The states a bill may post FROM.
+ *
+ * Was `DRAFT_STATES` — `{DRAFT, PENDING_APPROVAL, APPROVED}`, the same constant
+ * that answered "is this still editable". The Phase 6 audit found PENDING_APPROVAL
+ * in the posting set on both subledgers: a bill sitting in the approval queue
+ * could post without ever leaving it, which made doc 05's
+ * `MATCH_REVIEW -> APPROVAL_PENDING -> APPROVED` an ordering suggestion.
+ *
+ * "Not yet an accounting fact" and "ready to become one" are different questions,
+ * and answering them with one constant is how a control that exists in the
+ * lifecycle diagram fails to exist in the code. AR keeps both sets because it has
+ * editing and voiding paths that still need the wider one; here only posting
+ * consulted it, so the wider set is gone rather than left as a second name for
+ * something nothing asks.
+ */
+const POSTABLE_STATES = new Set(['DRAFT', 'APPROVED']);
 
 /**
  * The seam between AP and doc 10's commitment accounting — F-106.
@@ -465,10 +481,16 @@ export class ApService {
                                    normalized_invoice_number, document_date, posting_date, due_date,
                                    currency, exchange_rate, exchange_rate_date, subtotal, tax_total,
                                    total, base_total, amount_due, source_document_hash,
-                                   duplicate_override_by, duplicate_override_reason)
+                                   duplicate_override_by, duplicate_override_reason,
+                                   -- The preparer. vendor_bills had no such column
+                                   -- until migration 0049, which is why the doc 14
+                                   -- maker/checker rule could not be stated about a
+                                   -- bill at all: there was no maker to compare the
+                                   -- checker against.
+                                   created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11::date,$12::date,$13,$14::numeric,
                  $11::date,$15::numeric,$16::numeric,$17::numeric,$18::numeric,$17::numeric,
-                 $19,$20,$21)
+                 $19,$20,$21,$22)
          RETURNING id, legal_entity_id, accounting_book_id, vendor_id, vendor_invoice_number,
                    document_date::text AS document_date, posting_date::text AS posting_date,
                    due_date::text AS due_date, currency, status::text AS status,
@@ -497,6 +519,7 @@ export class ApService {
           input.sourceDocumentHash ?? null,
           input.duplicateOverrideReason ? principal.userId : null,
           input.duplicateOverrideReason ?? null,
+          principal.userId,
         ],
       );
 
@@ -919,15 +942,39 @@ export class ApService {
         );
       }
 
+      // doc 14 maker/checker, which this method could not express before
+      // migration 0049 gave `vendor_bills` a preparer column. It recorded no
+      // approver either — the only place `approved_by` appeared was the payload
+      // of the event it published, which is not a record anything can check.
+      if (bill.created_by === null) {
+        throw new AppError(
+          'SEGREGATION_OF_DUTIES',
+          'This bill has no preparer on record, so nothing can show that an approver is a ' +
+            'different person. It cannot be approved (doc 14 maker/checker). Bills entered ' +
+            'before the preparer column existed are in this position permanently.',
+          { details: { vendor_bill_id: id } },
+        );
+      }
+      if (bill.created_by === principal.userId) {
+        throw new AppError(
+          'SEGREGATION_OF_DUTIES',
+          'You entered this bill, so you cannot approve it. Gate F requires the preparer and the ' +
+            'approver to be different people.',
+          { details: { vendor_bill_id: id } },
+        );
+      }
+
       const { rows } = await client.query<Record<string, unknown>>(
         `UPDATE vendor_bills
-            SET status = 'APPROVED', approval_state = 'APPROVED', version = version + 1
+            SET status = 'APPROVED', approval_state = 'APPROVED',
+                approved_by = $2, approved_at = now(), version = version + 1
           WHERE id = $1
           RETURNING id, vendor_invoice_number, internal_number, status::text AS status,
                     approval_state::text AS approval_state, match_state::text AS match_state,
                     total::text AS total, amount_due::text AS amount_due,
+                    approved_by, approved_at::text AS approved_at,
                     version::text AS version`,
-        [id],
+        [id, principal.userId],
       );
 
       await publish(client, context, {
@@ -966,10 +1013,18 @@ export class ApService {
       assertEntityPermission(principal, 'vendor_bill.post', bill.legal_entity_id as string);
 
       if (bill.status === 'POSTED' || bill.status === 'PARTIALLY_PAID') return bill;
-      if (!DRAFT_STATES.has(bill.status as string)) {
+      // PENDING_APPROVAL was in this set until the Phase 6 audit: a bill sitting
+      // in the approval queue could post without ever leaving it, which made
+      // doc 05's `MATCH_REVIEW -> APPROVAL_PENDING -> APPROVED` an ordering
+      // suggestion. Entering the approval step is optional; finishing it is not.
+      if (!POSTABLE_STATES.has(bill.status as string)) {
         throw new AppError(
-          'VALIDATION_FAILED',
-          `This bill is ${bill.status} and cannot be posted.`,
+          bill.status === 'PENDING_APPROVAL' ? 'APPROVAL_REQUIRED' : 'VALIDATION_FAILED',
+          bill.status === 'PENDING_APPROVAL'
+            ? 'This bill is waiting for approval and cannot be posted until it has one ' +
+                '(POST /vendor-bills/{id}/approve, by someone other than whoever entered it).'
+            : `This bill is ${bill.status} and cannot be posted.`,
+          { details: { status: bill.status } },
         );
       }
 
@@ -1065,6 +1120,15 @@ export class ApService {
         description: `Bill ${bill.vendor_invoice_number ?? ''}`.trim(),
         branchId: (bill.branch_id as string) ?? null,
         contactId: bill.vendor_id as string,
+        // The bill's maker and checker become the journal's, so the ledger's
+        // approval threshold (0049) is satisfied by the approval the DOCUMENT
+        // carries. Otherwise an approved bill over the threshold would be
+        // refused by the journal guard although the control was already met.
+        approval: {
+          preparedBy: (bill.created_by as string) ?? null,
+          approvedBy: (bill.approved_by as string) ?? null,
+          approvedAt: (bill.approved_at as string) ?? null,
+        },
         lines,
         tax: {
           calculated,
@@ -2208,7 +2272,11 @@ export class ApService {
               tax_total::text AS tax_total, total::text AS total,
               amount_paid::text AS amount_paid, amount_credited::text AS amount_credited,
               amount_due::text AS amount_due, on_hold, accounting_entry_id,
-              version::text AS version
+              version::text AS version,
+              -- The maker and the checker (migration 0049). created_by did not
+              -- exist on this table before it, so the doc 14 maker/checker rule
+              -- was unstateable about a vendor bill, not merely unstated.
+              created_by, approved_by, approved_at::text AS approved_at
          FROM vendor_bills WHERE id = $1 ${options.forUpdate ? 'FOR UPDATE' : ''}`,
       [id],
     );

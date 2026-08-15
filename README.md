@@ -106,15 +106,24 @@ Not conventions — each of these fails a build.
 
 ## Progress
 
-| Phase                                                    | State                                                                                   |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Deliverable 1 — specification audit                      | complete · 97 findings                                                                  |
-| Deliverable 2 — canonical contracts                      | complete · all 14 S1 findings resolved                                                  |
-| **Phase 0** — repository and platform foundation         | **complete** · [evidence](docs/PHASE_0.md)                                              |
-| **Phase 1** — tenant, IAM, finance setup                 | **complete** · [evidence](docs/PHASE_1.md)                                              |
-| **Phase 2** — accounting kernel and general ledger       | **complete** · [evidence](docs/PHASE_2.md)                                              |
-| **Phase 3** — customers, vendors, AR, AP, tax, documents | **complete** · [evidence](docs/PHASE_3.md)                                              |
-| **Phase 4** — banking, cash, clearing and reconciliation | **complete** · [evidence](docs/PHASE_4.md)                                              |
-| **Phase 5** — inventory, fixed assets, projects, budgets | **complete** · [evidence](docs/PHASE_5.md)                                              |
-| Phase 6 — reporting, approvals, period close, audit      | next                                                                                    |
-| Phases 6–11                                              | per [21_Phased_Implementation_Plan.md](<project plan/21_Phased_Implementation_Plan.md>) |
+| Phase                                                    | State                                                            |
+| -------------------------------------------------------- | ---------------------------------------------------------------- |
+| Deliverable 1 — specification audit                      | complete · 97 findings                                           |
+| Deliverable 2 — canonical contracts                      | complete · all 14 S1 findings resolved                           |
+| **Phase 0** — repository and platform foundation         | **complete** · [evidence](docs/PHASE_0.md)                       |
+| **Phase 1** — tenant, IAM, finance setup                 | **complete** · [evidence](docs/PHASE_1.md)                       |
+| **Phase 2** — accounting kernel and general ledger       | **complete** · [evidence](docs/PHASE_2.md)                       |
+| **Phase 3** — customers, vendors, AR, AP, tax, documents | **complete** · [evidence](docs/PHASE_3.md)                       |
+| **Phase 4** — banking, cash, clearing and reconciliation | **complete** · [evidence](docs/PHASE_4.md)                       |
+| **Phase 5** — inventory, fixed assets, projects, budgets | **complete** · [evidence](docs/PHASE_5.md)                       |
+| Phase 6 — reporting, approvals, period close, audit      | **next** · with Phase 8, the remaining road to v1                |
+| Phase 8 — AI finance, document intelligence, automation  | in v1 scope · rests on Phase 6 report and approval surfaces      |
+| Phases 7, 9, 10, 11                                      | **out of v1 scope** (2026-08-15) — see First-version scope below |
+
+**First-version scope.** v1 ships Phases 0–6 and 8. Excluded: **7** consolidation and intercompany —
+multi-currency _transactions_ already work, what is out is group consolidation and elimination; **9**
+the public platform and integrations, which also removes the data-migration path, so v1 data arrives
+through the API or by hand; **10** localization, consistent with the generic/global first market; and
+**11**, which the spec itself marks optional. Doc 21's dependency rule puts Phase 8 after Phase 6 —
+AI "consumes controlled domain/report APIs and produces proposals/commands only" — so Phase 6's
+approval engine is load-bearing for v1 rather than polish.

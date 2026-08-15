@@ -68,6 +68,12 @@ const GUARD_PREFIXES: ReadonlyArray<readonly [string, ErrorCode]> = [
   // than earning one the contract would have to grow for it.
   ['BUDGET_IMMUTABLE:', 'POSTED_IMMUTABLE'],
   ['TRANSFER_UNBALANCED:', 'VALIDATION_FAILED'],
+  // Phase 6 groundwork (0049). Without this the guard falls through to the
+  // SQLSTATE map — 23001 reads as POSTED_IMMUTABLE — and answers 409 with the
+  // generic "The operation could not be completed." The refusal's whole value is
+  // that it names the amount and the threshold it exceeded, and a caller who
+  // must get the journal approved learns nothing from the generic form.
+  ['APPROVAL_REQUIRED:', 'APPROVAL_REQUIRED'],
 ];
 
 const SQLSTATE: Readonly<Record<string, ErrorCode>> = {
@@ -94,6 +100,10 @@ const CONSTRAINT_CODES: ReadonlyArray<readonly [RegExp, ErrorCode]> = [
   [/^vendor_bills_exact_duplicate_idx$/, 'DUPLICATE_SUSPECTED'],
   [/^jl_.*_xor$/, 'VALIDATION_FAILED'],
   [/remaining_quantity/, 'INSUFFICIENT_STOCK'],
+  // A maker/checker violation is a segregation-of-duties refusal, not a generic
+  // validation failure: the caller is not holding the wrong data, they are the
+  // wrong person, and only one of those is fixed by editing the request.
+  [/_maker_checker$/, 'SEGREGATION_OF_DUTIES'],
 ];
 
 export function mapDatabaseError(e: unknown): AppError {

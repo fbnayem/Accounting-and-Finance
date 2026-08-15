@@ -58,6 +58,28 @@ export interface DocumentPostingRequest {
    * the same reason `JournalService.reverse` does.
    */
   readonly reversalOfId?: string | null | undefined;
+  /**
+   * The document's own maker and checker, carried onto the journal it produces.
+   *
+   * Migration 0049 made `journal_entries.approved_by` a precondition of POSTED
+   * above the book's `journal_approval_threshold`, and `je_maker_checker` refuses
+   * an approval whose preparer is unknown or identical. For a document-sourced
+   * journal the maker is whoever prepared the DOCUMENT and the checker is
+   * whoever approved it — not whoever happened to call the post endpoint, who is
+   * recorded separately as `posted_by`. Copying the poster into `created_by`
+   * would refuse the ordinary case where the approver posts what they approved,
+   * and would let a preparer's own posting look like a third party's.
+   *
+   * Omitted by callers with no approval concept; `created_by` then falls back to
+   * the acting principal, which is what every subledger posting did before 0049.
+   */
+  readonly approval?:
+    | {
+        readonly preparedBy: string | null;
+        readonly approvedBy: string | null;
+        readonly approvedAt: string | null;
+      }
+    | undefined;
   readonly lines: readonly DraftLineInput[];
   readonly tax?:
     | {
@@ -179,14 +201,17 @@ export class DocumentPostingService {
       `INSERT INTO journal_entries (id, tenant_id, legal_entity_id, accounting_book_id, journal_id,
                                     accounting_period_id, branch_id, posting_date, document_date,
                                     description, source_type, source_id, source_event_id,
-                                    base_currency, status, created_by, reversal_of_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9::date,$10,$11,$12,$13,$14,'DRAFT',$15,$16)
+                                    base_currency, status, created_by, reversal_of_id,
+                                    approved_by, approved_at, approval_state)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9::date,$10,$11,$12,$13,$14,'DRAFT',$15,$16,
+               $17,$18::timestamptz,
+               CASE WHEN $17::uuid IS NULL THEN 'NOT_REQUIRED' ELSE 'APPROVED' END::approval_status)
        RETURNING id, tenant_id, legal_entity_id, accounting_book_id, journal_id,
                  accounting_period_id, branch_id, entry_number,
                  posting_date::text AS posting_date, document_date::text AS document_date,
                  description, source_type, source_id, source_event_id, reversal_of_id,
                  base_currency, status::text AS status, approval_state::text AS approval_state,
-                 version::text AS version`,
+                 version::text AS version, created_by, approved_by`,
       [
         entryId,
         principal.tenantId,
@@ -202,8 +227,10 @@ export class DocumentPostingService {
         request.sourceId,
         sourceEventId,
         book.baseCurrency,
-        principal.userId,
+        request.approval?.preparedBy ?? principal.userId,
         request.reversalOfId ?? null,
+        request.approval?.approvedBy ?? null,
+        request.approval?.approvedAt ?? null,
       ],
     );
     const entry = rows[0]!;

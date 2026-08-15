@@ -46,6 +46,19 @@ import {
 const DRAFT_STATES = new Set(['DRAFT', 'PENDING_APPROVAL', 'APPROVED']);
 
 /**
+ * The states a document may post FROM — deliberately narrower than DRAFT_STATES.
+ *
+ * The Phase 6 audit: "PENDING_APPROVAL is an accepted posting state in both
+ * subledgers, so a document awaiting approval can post." It was in this set
+ * because both sets used to be the same set — "not yet an accounting fact" and
+ * "ready to become one" are different questions, and answering them with one
+ * constant is how a control that exists in the lifecycle diagram fails to exist
+ * in the code. Voiding, editing and attaching files still use DRAFT_STATES:
+ * those are correct about a document under approval, and posting is not.
+ */
+const POSTABLE_STATES = new Set(['DRAFT', 'APPROVED']);
+
+/**
  * The inputs `calculate` actually reads. Quotes and sales orders are non-posting
  * (doc 04), so their lines carry no revenue account — splitting the type is what
  * lets one calculator serve every sales document instead of each service growing
@@ -643,10 +656,18 @@ export class ArService {
       assertEntityPermission(principal, 'invoice.post', invoice.legal_entity_id as string);
 
       if (invoice.status === 'POSTED' || invoice.status === 'PARTIALLY_PAID') return invoice;
-      if (!DRAFT_STATES.has(invoice.status as string)) {
+      // PENDING_APPROVAL was in this set until the Phase 6 audit: a document
+      // explicitly waiting for an approval could post without ever getting one,
+      // which made the approval step advisory. doc 04's lifecycle is
+      // `DRAFT -> PENDING_APPROVAL(optional) -> APPROVED -> POSTED` — the step is
+      // optional to ENTER, not optional to finish once entered.
+      if (!POSTABLE_STATES.has(invoice.status as string)) {
         throw new AppError(
-          'VALIDATION_FAILED',
-          `This invoice is ${invoice.status} and cannot be posted.`,
+          invoice.status === 'PENDING_APPROVAL' ? 'APPROVAL_REQUIRED' : 'VALIDATION_FAILED',
+          invoice.status === 'PENDING_APPROVAL'
+            ? 'This invoice is waiting for approval and cannot be posted until it has one ' +
+                '(POST /invoices/{id}/approve, by someone other than whoever raised it).'
+            : `This invoice is ${invoice.status} and cannot be posted.`,
           { details: { status: invoice.status } },
         );
       }
@@ -694,6 +715,17 @@ export class ArService {
         description: `Invoice ${invoice.invoice_number ?? ''}`.trim(),
         branchId: (invoice.branch_id as string) ?? null,
         contactId: invoice.customer_id as string,
+        // The invoice's maker and checker become the journal's, so the ledger's
+        // approval threshold (0049) is satisfied by the approval the DOCUMENT
+        // carries rather than by the person who happened to call this endpoint.
+        // Without this an approved invoice over the threshold would be refused by
+        // the journal guard even though the control it enforces was satisfied one
+        // aggregate up.
+        approval: {
+          preparedBy: (invoice.created_by as string) ?? null,
+          approvedBy: (invoice.approved_by as string) ?? null,
+          approvedAt: (invoice.approved_at as string) ?? null,
+        },
         lines,
         tax: {
           calculated,
@@ -881,7 +913,14 @@ export class ArService {
               total::text AS total, base_total::text AS base_total,
               amount_paid::text AS amount_paid, amount_credited::text AS amount_credited,
               amount_written_off::text AS amount_written_off, amount_due::text AS amount_due,
-              accounting_entry_id, version::text AS version
+              accounting_entry_id, version::text AS version,
+              -- The maker and the checker (migration 0049). Read on every load
+              -- because the two decisions that need them — "may this person
+              -- approve it" and "may this post above the threshold" — are both
+              -- taken against a row that has already been locked, and a second
+              -- query for two columns of a row we are holding is waste.
+              approval_state::text AS approval_state, created_by, approved_by,
+              approved_at::text AS approved_at
          FROM invoices WHERE id = $1 ${options.forUpdate ? 'FOR UPDATE' : ''}`,
       [id],
     );
@@ -1252,13 +1291,39 @@ export class ArService {
         );
       }
 
+      // doc 14 maker/checker. Until migration 0049 this method recorded no
+      // approver at all — it flipped a status and published an event whose
+      // payload named `approved_by`, which was the only place the fact was ever
+      // written down. There was consequently nothing for a segregation rule to
+      // compare, and the invoice half of Gate F was an event field.
+      //
+      // Refused here as well as by `invoices_maker_checker`, because the
+      // constraint's message names a constraint and this one names the rule.
+      if (invoice.created_by === null) {
+        throw new AppError(
+          'SEGREGATION_OF_DUTIES',
+          'This invoice has no preparer on record, so nothing can show that an approver is a ' +
+            'different person. It cannot be approved (doc 14 maker/checker).',
+          { details: { invoice_id: id } },
+        );
+      }
+      if (invoice.created_by === principal.userId) {
+        throw new AppError(
+          'SEGREGATION_OF_DUTIES',
+          'You raised this invoice, so you cannot approve it. Gate F requires the preparer and ' +
+            'the approver to be different people.',
+          { details: { invoice_id: id } },
+        );
+      }
+
       const { rows } = await client.query<Record<string, unknown>>(
         `UPDATE invoices
-            SET status = 'APPROVED', approval_state = 'APPROVED', version = version + 1
+            SET status = 'APPROVED', approval_state = 'APPROVED',
+                approved_by = $2, approved_at = now(), version = version + 1
           WHERE id = $1
           RETURNING id, status::text AS status, approval_state::text AS approval_state,
-                    version::text AS version`,
-        [id],
+                    approved_by, approved_at::text AS approved_at, version::text AS version`,
+        [id, principal.userId],
       );
 
       await publish(client, context, {

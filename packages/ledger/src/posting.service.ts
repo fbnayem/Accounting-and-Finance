@@ -39,6 +39,7 @@ import { lockPeriodForPosting, publish, recordAudit } from '@acct/database';
 import type { RequestContext } from '@acct/domain';
 import { can, type TenantPrincipal } from '@acct/domain';
 import { allocateNumber } from './numbering';
+import { assertJournalApproval } from './approval';
 import { LedgerProjectionService } from './projection.service';
 
 export interface JournalEntryRow extends Record<string, unknown> {
@@ -61,6 +62,16 @@ export interface JournalEntryRow extends Record<string, unknown> {
   status: 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'POSTED' | 'REVERSED';
   approval_state: string;
   version: string;
+  /**
+   * The preparer and the checker. Declared because migration 0049 made them a
+   * precondition of POSTED rather than decoration: `created_by` is the maker,
+   * `approved_by` the checker, and `je_maker_checker` refuses an approval whose
+   * preparer is unknown. Optional because most SELECTs in this file do not need
+   * them — `commitPosting` reads them itself rather than trusting a row that may
+   * have been loaded before the approval was recorded.
+   */
+  created_by?: string | null;
+  approved_by?: string | null;
 }
 
 export interface BookContext {
@@ -574,6 +585,17 @@ export class PostingService {
     prepared: PreparedJournal,
     options: { periodId: string; entryNumber: string; postingRuleVersionId?: string | null },
   ): Promise<JournalEntryRow> {
+    // The approval threshold, inside the transaction that writes the journal.
+    //
+    // Here rather than in the four callers because this method is the only place
+    // a journal becomes POSTED — the manual path, the subledger document path,
+    // the reversal path and the recurring-journal worker all arrive here — and a
+    // rule stated in four places is a rule three of them will eventually differ
+    // about. The database repeats it at COMMIT (0049); this half exists so the
+    // refusal reaches the caller as an actionable message naming both numbers
+    // rather than as a mapped constraint violation.
+    await this.assertApproved(client, principal, entry, book, prepared);
+
     // doc 02's high-risk category, checked here rather than at the guard because the
     // guard cannot know which accounts a body names until the body is resolved.
     if (prepared.controlAccounts.length > 0 && !can(principal, 'journal.post_control')) {
@@ -658,6 +680,61 @@ export class PostingService {
     });
 
     return posted;
+  }
+
+  /**
+   * Refuses a journal that needs an approval and has not got one.
+   *
+   * Reads the approval columns from the database rather than from the `entry`
+   * the caller is holding. The manual path loads its row before locking the
+   * period and preparing the lines, so by the time we reach here that row is
+   * several statements old; the subledger path inserts its header itself. In
+   * both cases the authoritative answer to "who approved this" is the row as it
+   * stands in this transaction, and re-reading it costs one indexed lookup
+   * against a row this transaction already holds a lock on.
+   *
+   * The amount is the journal's absolute value: debits and credits are equal on
+   * anything that will survive `journal_entries_balanced`, and `greatest` of the
+   * two is the honest figure to judge while they might not be. Compared with
+   * exact decimals — a threshold is a boundary, and a boundary compared in
+   * binary floating point is a boundary that moves (ADR-0006 §1).
+   */
+  private async assertApproved(
+    client: PoolClient,
+    principal: TenantPrincipal,
+    entry: JournalEntryRow,
+    book: BookContext,
+    prepared: PreparedJournal,
+  ): Promise<void> {
+    const { rows } = await client.query<{
+      created_by: string | null;
+      approved_by: string | null;
+      reversal_of_id: string | null;
+      entry_number: string | null;
+      reverses_approved: boolean;
+    }>(
+      `SELECT e.created_by, e.approved_by, e.reversal_of_id, e.entry_number,
+              (o.id IS NOT NULL AND o.approved_by IS NOT NULL) AS reverses_approved
+         FROM journal_entries e
+         LEFT JOIN journal_entries o ON o.id = e.reversal_of_id
+        WHERE e.id = $1 AND e.tenant_id = $2`,
+      [entry.id, principal.tenantId],
+    );
+    const row = rows[0];
+    if (!row) throw notFound('Journal entry', entry.id);
+
+    const debit = D(prepared.totalBaseDebit).abs();
+    const credit = D(prepared.totalBaseCredit).abs();
+
+    assertJournalApproval({
+      threshold: book.journalApprovalThreshold,
+      amount: (debit.gte(credit) ? debit : credit).toString(),
+      currency: book.baseCurrency,
+      preparedBy: row.created_by,
+      approvedBy: row.approved_by,
+      reference: row.entry_number ?? entry.id,
+      reversesApprovedEntry: row.reverses_approved,
+    });
   }
 
   /**

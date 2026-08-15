@@ -197,7 +197,16 @@ export function assertRefundWithinAvailable(
   }
 }
 
-const DRAFT_STATES = new Set(['DRAFT', 'PENDING_APPROVAL', 'APPROVED']);
+/**
+ * The states a credit note may post FROM.
+ *
+ * Was `DRAFT_STATES`, which included PENDING_APPROVAL — the Phase 6 audit's
+ * finding on the invoice and the bill, present here too and worse: a credit note
+ * reduces what a customer owes, so posting one straight out of the approval queue
+ * moves money in the direction nobody has reviewed. Entering the approval step is
+ * optional; finishing it, once entered, is not.
+ */
+const POSTABLE_STATES = new Set(['DRAFT', 'APPROVED']);
 
 export interface CreditNoteLineInput extends CalculableLineInput {
   revenueAccountId: string;
@@ -1032,10 +1041,17 @@ export class SalesService {
       assertEntityPermission(principal, 'credit_note.post', creditNote.legal_entity_id as string);
 
       if (creditNote.status === 'POSTED') return creditNote;
-      if (!DRAFT_STATES.has(creditNote.status as string)) {
+      // PENDING_APPROVAL is not a posting state, here for the same reason it is
+      // not one on an invoice or a bill — and a credit note is the document the
+      // hole mattered most on: it reduces what a customer owes, so posting one
+      // out of the approval queue moves money in the direction nobody reviews.
+      // A criterion proved on part of its domain is proved on none of it.
+      if (!POSTABLE_STATES.has(creditNote.status as string)) {
         throw new AppError(
-          'VALIDATION_FAILED',
-          `This credit note is ${creditNote.status} and cannot be posted.`,
+          creditNote.status === 'PENDING_APPROVAL' ? 'APPROVAL_REQUIRED' : 'VALIDATION_FAILED',
+          creditNote.status === 'PENDING_APPROVAL'
+            ? 'This credit note is waiting for approval and cannot be posted until it has one.'
+            : `This credit note is ${creditNote.status} and cannot be posted.`,
           { details: { status: creditNote.status } },
         );
       }

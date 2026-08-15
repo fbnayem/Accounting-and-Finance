@@ -884,10 +884,17 @@ export class ProcurementService {
       assertEntityPermission(principal, 'vendor_credit.post', credit.legal_entity_id as string);
 
       if (credit.status === 'POSTED') return credit;
-      if (!['DRAFT', 'PENDING_APPROVAL', 'APPROVED'].includes(credit.status as string)) {
+      // PENDING_APPROVAL is not a posting state. The Phase 6 audit found it in the
+      // posting set on the invoice and the bill; it was here too, and a criterion
+      // proved on part of its domain is proved on none of it — a control the
+      // credit documents do not share is a control with a documented way round it.
+      if (!['DRAFT', 'APPROVED'].includes(credit.status as string)) {
         throw new AppError(
-          'VALIDATION_FAILED',
-          `This vendor credit is ${credit.status} and cannot be posted.`,
+          credit.status === 'PENDING_APPROVAL' ? 'APPROVAL_REQUIRED' : 'VALIDATION_FAILED',
+          credit.status === 'PENDING_APPROVAL'
+            ? 'This vendor credit is waiting for approval and cannot be posted until it has one.'
+            : `This vendor credit is ${credit.status} and cannot be posted.`,
+          { details: { status: credit.status } },
         );
       }
       if (!credit.vendor_bill_id) {

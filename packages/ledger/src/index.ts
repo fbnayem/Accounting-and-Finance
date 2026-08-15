@@ -14,6 +14,7 @@
  * second posting path is born.
  */
 export * from './numbering';
+export * from './approval';
 export * from './projection.service';
 export * from './posting.service';
 export * from './journal.service';
